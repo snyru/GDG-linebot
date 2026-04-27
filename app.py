@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -7,9 +8,19 @@ from linebot.models import (
     ImageMessage, FlexSendMessage, FollowEvent
 )
 from linebot.exceptions import InvalidSignatureError
+import firebase_admin
+from firebase_admin import credentials, firestore
 import logging
 
 load_dotenv()
+
+# 初始化 Firebase
+cred_json = os.getenv('FIREBASE_CREDENTIALS')
+project_id = os.getenv('FIREBASE_PROJECT_ID')
+cred_dict = json.loads(cred_json)
+cred = credentials.Certificate(cred_dict)
+firebase_admin.initialize_app(cred, {'projectId': project_id})
+db = firestore.client()
 
 line_token = os.getenv('LINE_TOKEN')
 line_secret = os.getenv('LINE_SECRET')
@@ -23,7 +34,6 @@ handler = WebhookHandler(line_secret)
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)
 
-# 暫存每個使用者的對話狀態
 sessions = {}
 
 CATEGORIES = {
@@ -92,6 +102,20 @@ def get_main_menu():
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
 
+def save_item(user_id, session):
+    """存入 Firestore"""
+    db.collection('items').add({
+        'userId': user_id,
+        'type': session.get('type'),
+        'category': session.get('category'),
+        'description': session.get('description'),
+        'photo': session.get('photo'),
+        'location': session.get('location'),
+        'status': 'open',
+        'createdAt': firestore.SERVER_TIMESTAMP
+    })
+
+
 @app.route("/", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -142,13 +166,11 @@ def handle_message(event):
     session = sessions.get(user_id, {})
     step = session.get("step")
 
-    # 隨時可以回主選單
     if text in ["選單", "開始", "menu", "取消"]:
         sessions.pop(user_id, None)
         line_bot_api.reply_message(event.reply_token, get_main_menu())
         return
 
-    # 主選單選項
     if text == "我撿到東西了":
         sessions[user_id] = {"type": "found", "step": "wait_category"}
         line_bot_api.reply_message(
@@ -164,12 +186,23 @@ def handle_message(event):
         )
 
     elif text == "查看所有失物":
+        items = db.collection('items').where('status', '==', 'open').limit(5).stream()
+        result = []
+        for item in items:
+            d = item.to_dict()
+            item_type = "撿到" if d.get('type') == 'found' else "遺失"
+            result.append(f"【{item_type}】{d.get('category')} - {d.get('description')} @ {d.get('location')}")
+        
+        if result:
+            reply = "📋 目前的失物清單：\n\n" + "\n\n".join(result)
+        else:
+            reply = "目前沒有任何登記的失物 😊"
+        
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="（這裡之後會顯示失物清單）")
+            TextSendMessage(text=reply)
         )
 
-    # 步驟一：選分類
     elif step == "wait_category":
         if text in CATEGORIES:
             session["category"] = CATEGORIES[text]
@@ -185,7 +218,6 @@ def handle_message(event):
                 TextSendMessage(text="請回覆 1~5 的數字選擇分類 😊")
             )
 
-    # 步驟二：填描述
     elif step == "wait_description":
         session["description"] = text
         session["step"] = "wait_photo"
@@ -195,7 +227,6 @@ def handle_message(event):
             TextSendMessage(text="描述已記錄 ✅\n\n請上傳物品照片（若沒有照片請回覆「略過」）")
         )
 
-    # 步驟二點五：略過照片
     elif step == "wait_photo" and text == "略過":
         session["photo"] = None
         session["step"] = "wait_location"
@@ -205,22 +236,23 @@ def handle_message(event):
             TextSendMessage(text="📍 請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
         )
 
-    # 步驟三：填地點
     elif step == "wait_location":
         session["location"] = text
-        session["step"] = "done"
         sessions[user_id] = session
+
+        # 存進 Firestore
+        save_item(user_id, session)
+        sessions.pop(user_id, None)
 
         item_type = "撿到" if session.get("type") == "found" else "遺失"
         summary = (
-            f"✅ 登記完成！\n\n"
+            f"✅ 登記完成！已儲存到資料庫\n\n"
             f"類型：{item_type}\n"
             f"分類：{session.get('category')}\n"
             f"描述：{session.get('description')}\n"
             f"地點：{text}\n\n"
             f"我們會幫你比對，有符合的會通知你！"
         )
-        sessions.pop(user_id, None)
         line_bot_api.reply_message(
             event.reply_token,
             [
