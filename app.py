@@ -103,8 +103,8 @@ def get_main_menu():
 
 
 def save_item(user_id, session):
-    """存入 Firestore"""
-    db.collection('items').add({
+    """存入 Firestore 並回傳 doc id"""
+    doc_ref = db.collection('items').add({
         'userId': user_id,
         'type': session.get('type'),
         'category': session.get('category'),
@@ -114,6 +114,60 @@ def save_item(user_id, session):
         'status': 'open',
         'createdAt': firestore.SERVER_TIMESTAMP
     })
+    return doc_ref[1].id
+
+
+def match_and_notify(user_id, session, item_id):
+    """比對資料庫，找到符合的就通知雙方"""
+    opposite_type = 'lost' if session.get('type') == 'found' else 'found'
+    category = session.get('category')
+
+    matches = db.collection('items') \
+        .where('type', '==', opposite_type) \
+        .where('category', '==', category) \
+        .where('status', '==', 'open') \
+        .limit(3) \
+        .stream()
+
+    matched = [m for m in matches if m.id != item_id]
+
+    if not matched:
+        return
+
+    my_type = "撿到" if session.get('type') == 'found' else "遺失"
+    other_type = "遺失" if session.get('type') == 'found' else "撿到"
+
+    for match in matched:
+        match_data = match.to_dict()
+        other_user_id = match_data.get('userId')
+
+        # 通知對方
+        try:
+            line_bot_api.push_message(
+                other_user_id,
+                TextSendMessage(
+                    text=f"🔔 有人登記了{my_type}的{category}，可能跟你的有關！\n\n"
+                         f"描述：{session.get('description')}\n"
+                         f"地點：{session.get('location')}\n\n"
+                         f"請回覆「選單」查看更多"
+                )
+            )
+        except Exception as e:
+            app.logger.error(f"通知失敗: {e}")
+
+        # 通知自己
+        try:
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(
+                    text=f"🔔 資料庫裡有一筆{other_type}的{category}可能符合！\n\n"
+                         f"描述：{match_data.get('description')}\n"
+                         f"地點：{match_data.get('location')}\n\n"
+                         f"請回覆「選單」查看更多"
+                )
+            )
+        except Exception as e:
+            app.logger.error(f"通知失敗: {e}")
 
 
 @app.route("/", methods=['POST'])
@@ -241,7 +295,8 @@ def handle_message(event):
         sessions[user_id] = session
 
         # 存進 Firestore
-        save_item(user_id, session)
+        item_id = save_item(user_id, session)
+match_and_notify(user_id, session, item_id)
         sessions.pop(user_id, None)
 
         item_type = "撿到" if session.get("type") == "found" else "遺失"
