@@ -14,7 +14,6 @@ import logging
 
 load_dotenv()
 
-# 初始化 Firebase
 cred_json = os.getenv('FIREBASE_CREDENTIALS')
 project_id = os.getenv('FIREBASE_PROJECT_ID')
 cred_dict = json.loads(cred_json)
@@ -103,7 +102,6 @@ def get_main_menu():
 
 
 def save_item(user_id, session):
-    """存入 Firestore 並回傳 doc id"""
     doc_ref = db.collection('items').add({
         'userId': user_id,
         'type': session.get('type'),
@@ -118,7 +116,6 @@ def save_item(user_id, session):
 
 
 def match_and_notify(user_id, session, item_id):
-    """比對資料庫，找到符合的就通知雙方"""
     opposite_type = 'lost' if session.get('type') == 'found' else 'found'
     category = session.get('category')
 
@@ -141,7 +138,6 @@ def match_and_notify(user_id, session, item_id):
         match_data = match.to_dict()
         other_user_id = match_data.get('userId')
 
-        # 通知對方
         try:
             line_bot_api.push_message(
                 other_user_id,
@@ -153,9 +149,8 @@ def match_and_notify(user_id, session, item_id):
                 )
             )
         except Exception as e:
-            app.logger.error(f"通知失敗: {e}")
+            app.logger.error(f"通知對方失敗: {e}")
 
-        # 通知自己
         try:
             line_bot_api.push_message(
                 user_id,
@@ -167,7 +162,7 @@ def match_and_notify(user_id, session, item_id):
                 )
             )
         except Exception as e:
-            app.logger.error(f"通知失敗: {e}")
+            app.logger.error(f"通知自己失敗: {e}")
 
 
 @app.route("/", methods=['POST'])
@@ -246,12 +241,12 @@ def handle_message(event):
             d = item.to_dict()
             item_type = "撿到" if d.get('type') == 'found' else "遺失"
             result.append(f"【{item_type}】{d.get('category')} - {d.get('description')} @ {d.get('location')}")
-        
+
         if result:
             reply = "📋 目前的失物清單：\n\n" + "\n\n".join(result)
         else:
             reply = "目前沒有任何登記的失物 😊"
-        
+
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=reply)
@@ -294,9 +289,8 @@ def handle_message(event):
         session["location"] = text
         sessions[user_id] = session
 
-        # 存進 Firestore
         item_id = save_item(user_id, session)
-match_and_notify(user_id, session, item_id)
+        match_and_notify(user_id, session, item_id)
         sessions.pop(user_id, None)
 
         item_type = "撿到" if session.get("type") == "found" else "遺失"
