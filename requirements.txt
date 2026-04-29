@@ -3,3 +3,4 @@ line-bot-sdk
 python-dotenv
 gunicorn
 firebase-admin
+cloudinary
