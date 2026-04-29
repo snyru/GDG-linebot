@@ -5,11 +5,14 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
-    ImageMessage, FlexSendMessage, FollowEvent
+    ImageMessage, FlexSendMessage, FollowEvent,
+    ImageSendMessage
 )
 from linebot.exceptions import InvalidSignatureError
 import firebase_admin
 from firebase_admin import credentials, firestore
+import cloudinary
+import cloudinary.uploader
 import logging
 
 load_dotenv()
@@ -20,6 +23,12 @@ cred_dict = json.loads(cred_json)
 cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred, {'projectId': project_id})
 db = firestore.client()
+
+cloudinary.config(
+    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.getenv('CLOUDINARY_API_KEY'),
+    api_secret=os.getenv('CLOUDINARY_API_SECRET')
+)
 
 line_token = os.getenv('LINE_TOKEN')
 line_secret = os.getenv('LINE_SECRET')
@@ -101,6 +110,20 @@ def get_main_menu():
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
 
+def create_or_update_user(user_id, display_name):
+    user_ref = db.collection('users').document(user_id)
+    user_doc = user_ref.get()
+    if not user_doc.exists:
+        user_ref.set({
+            'lineUserId': user_id,
+            'displayName': display_name,
+            'notifyEnabled': True,
+            'createdAt': firestore.SERVER_TIMESTAMP
+        })
+    else:
+        user_ref.update({'displayName': display_name})
+
+
 def save_item(user_id, session):
     doc_ref = db.collection('items').add({
         'userId': user_id,
@@ -138,29 +161,62 @@ def match_and_notify(user_id, session, item_id):
         match_data = match.to_dict()
         other_user_id = match_data.get('userId')
 
+        found_id = item_id if session.get('type') == 'found' else match.id
+        lost_id = match.id if session.get('type') == 'found' else item_id
+
+        existing = db.collection('matches') \
+            .where('foundItemId', '==', found_id) \
+            .where('lostItemId', '==', lost_id) \
+            .limit(1) \
+            .stream()
+
+        if list(existing):
+            continue
+
+        db.collection('matches').add({
+            'foundItemId': found_id,
+            'lostItemId': lost_id,
+            'foundUserId': user_id if session.get('type') == 'found' else other_user_id,
+            'lostUserId': other_user_id if session.get('type') == 'found' else user_id,
+            'status': 'notified',
+            'createdAt': firestore.SERVER_TIMESTAMP
+        })
+
+        # 通知對方
         try:
-            line_bot_api.push_message(
-                other_user_id,
+            messages = [
                 TextSendMessage(
                     text=f"🔔 有人登記了{my_type}的{category}，可能跟你的有關！\n\n"
                          f"描述：{session.get('description')}\n"
                          f"地點：{session.get('location')}\n\n"
                          f"請回覆「選單」查看更多"
                 )
-            )
+            ]
+            if session.get('photo'):
+                messages.append(ImageSendMessage(
+                    original_content_url=session.get('photo'),
+                    preview_image_url=session.get('photo')
+                ))
+            line_bot_api.push_message(other_user_id, messages)
         except Exception as e:
             app.logger.error(f"通知對方失敗: {e}")
 
+        # 通知自己
         try:
-            line_bot_api.push_message(
-                user_id,
+            messages = [
                 TextSendMessage(
                     text=f"🔔 資料庫裡有一筆{other_type}的{category}可能符合！\n\n"
                          f"描述：{match_data.get('description')}\n"
                          f"地點：{match_data.get('location')}\n\n"
                          f"請回覆「選單」查看更多"
                 )
-            )
+            ]
+            if match_data.get('photo'):
+                messages.append(ImageSendMessage(
+                    original_content_url=match_data.get('photo'),
+                    preview_image_url=match_data.get('photo')
+                ))
+            line_bot_api.push_message(user_id, messages)
         except Exception as e:
             app.logger.error(f"通知自己失敗: {e}")
 
@@ -178,10 +234,13 @@ def callback():
 
 @handler.add(FollowEvent)
 def handle_follow(event):
+    user_id = event.source.user_id
+    profile = line_bot_api.get_profile(user_id)
+    create_or_update_user(user_id, profile.display_name)
     line_bot_api.reply_message(
         event.reply_token,
         [
-            TextSendMessage(text="歡迎使用失物招領服務！👋"),
+            TextSendMessage(text=f"歡迎 {profile.display_name}！👋\n使用失物招領服務"),
             get_main_menu()
         ]
     )
@@ -194,12 +253,21 @@ def handle_image(event):
     step = session.get("step")
 
     if step == "wait_photo":
-        session["photo"] = event.message.id
+        message_content = line_bot_api.get_message_content(event.message.id)
+        image_data = b"".join(chunk for chunk in message_content.iter_content())
+
+        upload_result = cloudinary.uploader.upload(
+            image_data,
+            folder="linebot-lost-found"
+        )
+        image_url = upload_result.get('secure_url')
+
+        session["photo"] = image_url
         session["step"] = "wait_location"
         sessions[user_id] = session
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="📍 最後，請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
+            TextSendMessage(text="照片已上傳 ✅\n\n📍 最後，請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
         )
     else:
         line_bot_api.reply_message(
