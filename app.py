@@ -324,8 +324,8 @@ def handle_message(event):
         )
     
     elif text == "我找到了":
-    items = db.collection('items').where('status', '==', 'open').limit(5).stream()
-    result = []
+        items = db.collection('items').where('status', '==', 'open').limit(5).stream()
+        result = []
 
         for item in items:
             d = item.to_dict()
