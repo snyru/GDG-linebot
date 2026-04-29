@@ -42,8 +42,6 @@ handler = WebhookHandler(line_secret)
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)
 
-sessions = {}
-
 CATEGORIES = {
     "1": "電子產品",
     "2": "衣物配件",
@@ -51,6 +49,19 @@ CATEGORIES = {
     "4": "鑰匙",
     "5": "其他"
 }
+
+
+def get_session(user_id):
+    doc = db.collection('sessions').document(user_id).get()
+    return doc.to_dict() if doc.exists else {}
+
+
+def set_session(user_id, data):
+    db.collection('sessions').document(user_id).set(data)
+
+
+def clear_session(user_id):
+    db.collection('sessions').document(user_id).delete()
 
 
 def get_main_menu():
@@ -249,7 +260,7 @@ def handle_follow(event):
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
-    session = sessions.get(user_id, {})
+    session = get_session(user_id)
     step = session.get("step")
 
     if step == "wait_photo":
@@ -264,7 +275,7 @@ def handle_image(event):
 
         session["photo"] = image_url
         session["step"] = "wait_location"
-        sessions[user_id] = session
+        set_session(user_id, session)
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="照片已上傳 ✅\n\n📍 最後，請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
@@ -280,23 +291,23 @@ def handle_image(event):
 def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
-    session = sessions.get(user_id, {})
+    session = get_session(user_id)
     step = session.get("step")
 
     if text in ["選單", "開始", "menu", "取消"]:
-        sessions.pop(user_id, None)
+        clear_session(user_id)
         line_bot_api.reply_message(event.reply_token, get_main_menu())
         return
 
     if text == "我撿到東西了":
-        sessions[user_id] = {"type": "found", "step": "wait_category"}
+        set_session(user_id, {"type": "found", "step": "wait_category"})
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="好的！請問撿到的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他")
         )
 
     elif text == "我在找東西":
-        sessions[user_id] = {"type": "lost", "step": "wait_category"}
+        set_session(user_id, {"type": "lost", "step": "wait_category"})
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="沒關係！請問遺失的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他")
@@ -324,7 +335,7 @@ def handle_message(event):
         if text in CATEGORIES:
             session["category"] = CATEGORIES[text]
             session["step"] = "wait_description"
-            sessions[user_id] = session
+            set_session(user_id, session)
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=f"分類：{CATEGORIES[text]} ✅\n\n請描述一下這個物品的外觀特徵（顏色、品牌、特殊記號等）")
@@ -338,7 +349,7 @@ def handle_message(event):
     elif step == "wait_description":
         session["description"] = text
         session["step"] = "wait_photo"
-        sessions[user_id] = session
+        set_session(user_id, session)
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="描述已記錄 ✅\n\n請上傳物品照片（若沒有照片請回覆「略過」）")
@@ -347,7 +358,7 @@ def handle_message(event):
     elif step == "wait_photo" and text == "略過":
         session["photo"] = None
         session["step"] = "wait_location"
-        sessions[user_id] = session
+        set_session(user_id, session)
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="📍 請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
@@ -355,11 +366,11 @@ def handle_message(event):
 
     elif step == "wait_location":
         session["location"] = text
-        sessions[user_id] = session
+        set_session(user_id, session)
 
         item_id = save_item(user_id, session)
         match_and_notify(user_id, session, item_id)
-        sessions.pop(user_id, None)
+        clear_session(user_id)
 
         item_type = "撿到" if session.get("type") == "found" else "遺失"
         summary = (
