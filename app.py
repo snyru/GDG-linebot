@@ -333,27 +333,27 @@ def handle_message(event):
             result.append(
                 f"【{item_type}】{d.get('category')} - {d.get('description')} @ {d.get('location')}\n"
                 f"回覆：選擇 {item.id}"
+            )
+
+        if result:
+            reply = "✅ 請選擇你已找回的物品：\n\n" + "\n\n".join(result)
+        else:
+            reply = "目前沒有可選擇的失物 😊"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply)
         )
 
-    if result:
-        reply = "✅ 請選擇你已找回的物品：\n\n" + "\n\n".join(result)
-    else:
-        reply = "目前沒有可選擇的失物 😊"
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply)
-    )
     elif text.startswith("選擇 "):
         item_id = text.replace("選擇 ", "").strip()
-
         session["confirm_delete_id"] = item_id
         set_session(user_id, session)
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"你確定要將這筆物品標記為已找回嗎？\n\n請回覆：確認刪除")
-    )
+            TextSendMessage(text="你確定要將這筆物品標記為已找回嗎？\n\n請回覆：確認刪除")
+        )
 
     elif text == "確認刪除":
         item_id = session.get("confirm_delete_id")
@@ -374,7 +374,7 @@ def handle_message(event):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="✅ 已確認找回，這筆物品已從清單中移除。")
-    )
+        )
 
 
     elif text == "查看所有失物":
