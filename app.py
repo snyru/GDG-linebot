@@ -106,6 +106,16 @@ def get_main_menu():
                         "text": "我在找東西"
                     }
                 },
+                  {
+                    "type": "button",
+                    "style": "primary",
+                    "color": "#FF9800",
+                    "action": {
+                        "type": "message",
+                        "label": "✅ 我找到了",
+                        "text": "我找到了"
+                    }
+                },
                 {
                     "type": "button",
                     "style": "secondary",
@@ -311,6 +321,12 @@ def handle_message(event):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="沒關係！請問遺失的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他")
+        )
+    
+    elif text == "我找到了":
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="✅ 請選擇你已找回的物品")
         )
 
     elif text == "查看所有失物":
