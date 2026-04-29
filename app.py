@@ -325,25 +325,50 @@ def handle_message(event):
     
     elif text == "我找到了":
         items = db.collection('items').where('status', '==', 'open').limit(5).stream()
-        result = []
+
+        contents = []
 
         for item in items:
             d = item.to_dict()
             item_type = "撿到" if d.get('type') == 'found' else "遺失"
-            result.append(
-                f"【{item_type}】{d.get('category')} - {d.get('description')} @ {d.get('location')}\n"
-                f"回覆：選擇 {item.id}"
+
+            contents.append({
+                "type": "button",
+                "style": "primary",
+                "action": {
+                    "type": "message",
+                    "label": f"{d.get('category')} - {d.get('description')}",
+                    "text": f"選擇 {item.id}"
+                }
+            })
+
+        if contents:
+            flex = {
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "md",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "✅ 請選擇你已找回的物品",
+                            "weight": "bold",
+                            "size": "lg"
+                        }
+                    ] + contents
+                }
+            }
+
+            line_bot_api.reply_message(
+                event.reply_token,
+                FlexSendMessage(alt_text="選擇物品", contents=flex)
             )
-
-        if result:
-            reply = "✅ 請選擇你已找回的物品：\n\n" + "\n\n".join(result)
         else:
-            reply = "目前沒有可選擇的失物 😊"
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply)
-        )
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="目前沒有可選擇的失物 😊")
+            )
 
     elif text.startswith("選擇 "):
         item_id = text.replace("選擇 ", "").strip()
