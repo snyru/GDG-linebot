@@ -324,10 +324,58 @@ def handle_message(event):
         )
     
     elif text == "我找到了":
+    items = db.collection('items').where('status', '==', 'open').limit(5).stream()
+    result = []
+
+        for item in items:
+            d = item.to_dict()
+            item_type = "撿到" if d.get('type') == 'found' else "遺失"
+            result.append(
+                f"【{item_type}】{d.get('category')} - {d.get('description')} @ {d.get('location')}\n"
+                f"回覆：選擇 {item.id}"
+        )
+
+    if result:
+        reply = "✅ 請選擇你已找回的物品：\n\n" + "\n\n".join(result)
+    else:
+        reply = "目前沒有可選擇的失物 😊"
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=reply)
+    )
+    elif text.startswith("選擇 "):
+        item_id = text.replace("選擇 ", "").strip()
+
+        session["confirm_delete_id"] = item_id
+        set_session(user_id, session)
+
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="✅ 請選擇你已找回的物品")
-        )
+            TextSendMessage(text=f"你確定要將這筆物品標記為已找回嗎？\n\n請回覆：確認刪除")
+    )
+
+    elif text == "確認刪除":
+        item_id = session.get("confirm_delete_id")
+
+        if not item_id:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="找不到要處理的物品，請重新選擇。")
+            )
+            return
+
+        db.collection('items').document(item_id).update({
+            'status': 'closed'
+        })
+
+        clear_session(user_id)
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="✅ 已確認找回，這筆物品已從清單中移除。")
+    )
+
 
     elif text == "查看所有失物":
         items = db.collection('items').where('status', '==', 'open').limit(5).stream()
