@@ -1,47 +1,240 @@
-import os
-import json
-from dotenv import load_dotenv
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    ImageMessage, FlexSendMessage, FollowEvent,
-    ImageSendMessage
-)
-from linebot.exceptions import InvalidSignatureError
-import firebase_admin
-from firebase_admin import credentials, firestore
-import cloudinary
-import cloudinary.uploader
-import logging
+import uuid
+from urllib.parse import parse_qs
 
-load_dotenv()
 
-cred_json = os.getenv('FIREBASE_CREDENTIALS')
-project_id = os.getenv('FIREBASE_PROJECT_ID')
-cred_dict = json.loads(cred_json)
-cred = credentials.Certificate(cred_dict)
-firebase_admin.initialize_app(cred, {'projectId': project_id})
-db = firestore.client()
+# ============ 假資料庫（用 dict 模擬 Firestore）============
+class FakeDB:
+    def __init__(self):
+        self.collections = {
+            'items': {},      # id -> dict
+            'sessions': {},   # user_id -> dict
+            'users': {},
+            'matches': {}
+        }
 
-cloudinary.config(
-    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
-    api_key=os.getenv('CLOUDINARY_API_KEY'),
-    api_secret=os.getenv('CLOUDINARY_API_SECRET')
-)
+    def collection(self, name):
+        return FakeCollection(self, name)
 
-line_token = os.getenv('LINE_TOKEN')
-line_secret = os.getenv('LINE_SECRET')
 
-if not line_token or not line_secret:
-    raise ValueError("LINE_TOKEN 或 LINE_SECRET 未設置")
+class FakeCollection:
+    def __init__(self, db, name):
+        self.db = db
+        self.name = name
+        self._filters = []
+        self._limit = None
 
-line_bot_api = LineBotApi(line_token)
-handler = WebhookHandler(line_secret)
+    def document(self, doc_id):
+        return FakeDoc(self.db, self.name, doc_id)
 
-app = Flask(__name__)
-app.logger.setLevel(logging.DEBUG)
+    def where(self, field, op, value):
+        new = FakeCollection(self.db, self.name)
+        new._filters = self._filters + [(field, op, value)]
+        new._limit = self._limit
+        return new
 
+    def limit(self, n):
+        new = FakeCollection(self.db, self.name)
+        new._filters = self._filters
+        new._limit = n
+        return new
+
+    def stream(self):
+        results = []
+        for doc_id, data in self.db.collections[self.name].items():
+            ok = True
+            for field, op, value in self._filters:
+                if op == '==' and data.get(field) != value:
+                    ok = False
+                    break
+            if ok:
+                results.append(FakeSnapshot(doc_id, data))
+        if self._limit:
+            results = results[:self._limit]
+        return iter(results)
+
+    def add(self, data):
+        new_id = str(uuid.uuid4())[:8]
+        self.db.collections[self.name][new_id] = data
+        return (None, FakeDoc(self.db, self.name, new_id))
+
+
+class FakeDoc:
+    def __init__(self, db, collection_name, doc_id):
+        self.db = db
+        self.collection_name = collection_name
+        self.id = doc_id
+
+    def get(self):
+        data = self.db.collections[self.collection_name].get(self.id)
+        return FakeSnapshot(self.id, data) if data is not None else FakeSnapshot(self.id, None)
+
+    def set(self, data):
+        self.db.collections[self.collection_name][self.id] = data
+
+    def update(self, data):
+        if self.id in self.db.collections[self.collection_name]:
+            self.db.collections[self.collection_name][self.id].update(data)
+
+    def delete(self):
+        self.db.collections[self.collection_name].pop(self.id, None)
+
+
+class FakeSnapshot:
+    def __init__(self, doc_id, data):
+        self.id = doc_id
+        self._data = data
+
+    @property
+    def exists(self):
+        return self._data is not None
+
+    def to_dict(self):
+        return self._data
+
+
+db = FakeDB()
+
+
+# ============ 預設塞一些假資料（5 筆遺失物，方便測試）============
+def seed_data():
+    sample_items = [
+        {'userId': 'u1', 'type': 'lost', 'category': '電子產品',
+         'description': '黑色 iPhone 14，背蓋有貼貓貼紙', 'photo': None,
+         'location': '圖書館一樓', 'status': 'open'},
+        {'userId': 'u2', 'type': 'found', 'category': '鑰匙',
+         'description': '一串鑰匙，有藍色吊飾', 'photo': None,
+         'location': '學生餐廳', 'status': 'open'},
+        {'userId': 'u1', 'type': 'lost', 'category': '證件錢包',
+         'description': '咖啡色長夾，裡面有學生證', 'photo': None,
+         'location': '系館 305 教室', 'status': 'open'},
+        {'userId': 'u3', 'type': 'lost', 'category': '衣物配件',
+         'description': '黑色 Nike 帽子', 'photo': None,
+         'location': '操場', 'status': 'open'},
+        {'userId': 'u2', 'type': 'found', 'category': '其他',
+         'description': '一把藍色雨傘', 'photo': None,
+         'location': '校門口', 'status': 'open'},
+    ]
+    for item in sample_items:
+        db.collection('items').add(item)
+
+
+# ============ 假的 LINE SDK ============
+class FakeSendMessage:
+    pass
+
+
+class TextSendMessage(FakeSendMessage):
+    def __init__(self, text):
+        self.text = text
+
+    def render(self):
+        return f"💬 {self.text}"
+
+
+class ImageSendMessage(FakeSendMessage):
+    def __init__(self, original_content_url, preview_image_url):
+        self.url = original_content_url
+
+    def render(self):
+        return f"🖼️  [圖片] {self.url}"
+
+
+class FlexSendMessage(FakeSendMessage):
+    def __init__(self, alt_text, contents):
+        self.alt_text = alt_text
+        self.contents = contents
+
+    def render(self):
+        """把 Flex Message 渲染成文字版+按鈕清單"""
+        lines = [f"\n📦 [Flex: {self.alt_text}]"]
+        lines.append("─" * 50)
+
+        # 取出 header
+        bubble = self.contents
+        header = bubble.get('header', {})
+        if header:
+            for c in header.get('contents', []):
+                if c.get('type') == 'text':
+                    lines.append(f"  {c.get('text', '')}")
+            lines.append("─" * 50)
+
+        # 取出 body
+        body = bubble.get('body', {})
+        buttons = []
+        for c in body.get('contents', []):
+            extract_text_and_buttons(c, lines, buttons, indent="  ")
+
+        # 取出 footer
+        footer = bubble.get('footer', {})
+        if footer:
+            lines.append("─" * 50)
+            for c in footer.get('contents', []):
+                extract_text_and_buttons(c, lines, buttons, indent="  ")
+
+        # 列出可點擊的按鈕
+        if buttons:
+            lines.append("")
+            lines.append("👉 可點按鈕（輸入 >編號 來點）：")
+            for idx, btn in enumerate(buttons, 1):
+                lines.append(f"   >{idx}  {btn['label']}")
+
+        return "\n".join(lines), buttons
+
+
+def extract_text_and_buttons(node, lines, buttons, indent=""):
+    """遞迴從 Flex 節點取出文字和按鈕"""
+    if not isinstance(node, dict):
+        return
+    t = node.get('type')
+    if t == 'text':
+        text = node.get('text', '').replace('\n', f'\n{indent}')
+        lines.append(f"{indent}{text}")
+    elif t == 'separator':
+        lines.append(f"{indent}─────")
+    elif t == 'button':
+        action = node.get('action', {})
+        label = action.get('label', '?')
+        action_type = action.get('type')
+        if action_type == 'message':
+            buttons.append({'label': label, 'type': 'message', 'text': action.get('text')})
+        elif action_type == 'postback':
+            buttons.append({'label': label, 'type': 'postback', 'data': action.get('data')})
+    elif t == 'box':
+        for c in node.get('contents', []):
+            extract_text_and_buttons(c, lines, buttons, indent=indent)
+
+
+class FakeLineBotApi:
+    """模擬 LINE Bot API，把訊息印在螢幕上"""
+    def __init__(self):
+        self.last_buttons = []  # 最近一次回的按鈕列表
+
+    def reply_message(self, reply_token, messages):
+        if not isinstance(messages, list):
+            messages = [messages]
+        all_buttons = []
+        for msg in messages:
+            if isinstance(msg, FlexSendMessage):
+                rendered, buttons = msg.render()
+                print(rendered)
+                all_buttons.extend(buttons)
+            else:
+                print(msg.render())
+        self.last_buttons = all_buttons
+
+
+line_bot_api = FakeLineBotApi()
+
+
+# ============ 模擬的 firestore.SERVER_TIMESTAMP ============
+class FakeFirestore:
+    SERVER_TIMESTAMP = "[SERVER_TIMESTAMP]"
+
+
+firestore = FakeFirestore()
+
+
+# ============ 以下是從 app.py 抽出來的核心邏輯（去掉 LINE/Firebase 依賴）============
 CATEGORIES = {
     "1": "電子產品",
     "2": "衣物配件",
@@ -68,85 +261,26 @@ def get_main_menu():
     flex_content = {
         "type": "bubble",
         "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "md",
+            "type": "box", "layout": "vertical", "spacing": "md",
             "contents": [
-                {
-                    "type": "text",
-                    "text": "🔍 失物招領",
-                    "weight": "bold",
-                    "size": "xl",
-                    "align": "center"
-                },
-                {
-                    "type": "text",
-                    "text": "請選擇你的狀況",
-                    "size": "sm",
-                    "color": "#888888",
-                    "align": "center"
-                },
-                {
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#4CAF50",
-                    "action": {
-                        "type": "message",
-                        "label": "📦 我撿到東西了",
-                        "text": "我撿到東西了"
-                    }
-                },
-                {
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#2196F3",
-                    "action": {
-                        "type": "message",
-                        "label": "🔎 我在找東西",
-                        "text": "我在找東西"
-                    }
-                },
-                  {
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#FF9800",
-                    "action": {
-                        "type": "message",
-                        "label": "✅ 我找到了",
-                        "text": "我找到了"
-                    }
-                },
-                {
-                    "type": "button",
-                    "style": "secondary",
-                    "action": {
-                        "type": "message",
-                        "label": "📋 查看所有失物",
-                        "text": "查看所有失物"
-                    }
-                }
+                {"type": "text", "text": "🔍 失物招領", "weight": "bold", "size": "xl", "align": "center"},
+                {"type": "text", "text": "請選擇你的狀況", "size": "sm", "color": "#888888", "align": "center"},
+                {"type": "button", "style": "primary", "color": "#4CAF50",
+                 "action": {"type": "message", "label": "📦 我撿到東西了", "text": "我撿到東西了"}},
+                {"type": "button", "style": "primary", "color": "#2196F3",
+                 "action": {"type": "message", "label": "🔎 我在找東西", "text": "我在找東西"}},
+                {"type": "button", "style": "primary", "color": "#FF9800",
+                 "action": {"type": "message", "label": "✅ 我找到了", "text": "我找到了"}},
+                {"type": "button", "style": "secondary",
+                 "action": {"type": "message", "label": "📋 查看所有失物", "text": "查看所有失物"}},
             ]
         }
     }
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
 
-def create_or_update_user(user_id, display_name):
-    user_ref = db.collection('users').document(user_id)
-    user_doc = user_ref.get()
-    if not user_doc.exists:
-        user_ref.set({
-            'lineUserId': user_id,
-            'displayName': display_name,
-            'notifyEnabled': True,
-            'createdAt': firestore.SERVER_TIMESTAMP
-        })
-    else:
-        user_ref.update({'displayName': display_name})
-
-
 def save_item(user_id, session):
-    doc_ref = db.collection('items').add({
+    _, doc = db.collection('items').add({
         'userId': user_id,
         'type': session.get('type'),
         'category': session.get('category'),
@@ -156,252 +290,172 @@ def save_item(user_id, session):
         'status': 'open',
         'createdAt': firestore.SERVER_TIMESTAMP
     })
-    return doc_ref[1].id
+    return doc.id
 
 
-def match_and_notify(user_id, session, item_id):
-    opposite_type = 'lost' if session.get('type') == 'found' else 'found'
-    category = session.get('category')
+def get_open_items_for_found():
+    docs = db.collection('items').where('status', '==', 'open').limit(20).stream()
+    items = []
+    for d in docs:
+        data = d.to_dict()
+        data['id'] = d.id
+        items.append(data)
+    return items
 
-    matches = db.collection('items') \
-        .where('type', '==', opposite_type) \
-        .where('category', '==', category) \
-        .where('status', '==', 'open') \
-        .limit(3) \
-        .stream()
 
-    matched = [m for m in matches if m.id != item_id]
+def build_lost_items_flex(items, selected_ids):
+    if not items:
+        return TextSendMessage(text="目前沒有可選擇的失物 😊")
 
-    if not matched:
-        return
+    contents = []
+    for idx, item in enumerate(items):
+        is_selected = item['id'] in selected_ids
+        icon = "☑️" if is_selected else "⬜"
+        btn_label = "取消" if is_selected else "勾選"
+        btn_style = "primary" if is_selected else "secondary"
+        item_type = "撿到" if item.get('type') == 'found' else "遺失"
 
-    my_type = "撿到" if session.get('type') == 'found' else "遺失"
-    other_type = "遺失" if session.get('type') == 'found' else "撿到"
+        row = {
+            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "contents": [
+                {"type": "text",
+                 "text": f"{icon} 【{item_type}】{item.get('category', '')}\n{item.get('description', '')[:30]}",
+                 "wrap": True, "size": "sm", "flex": 5},
+                {"type": "button", "style": btn_style, "height": "sm", "flex": 3,
+                 "action": {"type": "postback", "label": btn_label,
+                            "data": f"action=toggle&id={item['id']}",
+                            "displayText": f"{btn_label}：{item.get('category', '')}"}}
+            ]
+        }
+        contents.append(row)
+        if idx < len(items) - 1:
+            contents.append({"type": "separator", "margin": "sm"})
 
-    for match in matched:
-        match_data = match.to_dict()
-        other_user_id = match_data.get('userId')
+    bubble = {
+        "type": "bubble",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "✅ 請勾選已找回的物品",
+                 "weight": "bold", "size": "lg", "align": "center"},
+                {"type": "text", "text": f"已選 {len(selected_ids)} 項（可複選）",
+                 "size": "xs", "color": "#888888", "align": "center"}
+            ]
+        },
+        "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": contents},
+        "footer": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "button", "style": "primary", "color": "#FF9800",
+                 "action": {"type": "postback", "label": "確定",
+                            "data": "action=confirm", "displayText": "確定"}}
+            ]
+        }
+    }
+    return FlexSendMessage(alt_text="勾選已找回物品", contents=bubble)
 
-        found_id = item_id if session.get('type') == 'found' else match.id
-        lost_id = match.id if session.get('type') == 'found' else item_id
 
-        existing = db.collection('matches') \
-            .where('foundItemId', '==', found_id) \
-            .where('lostItemId', '==', lost_id) \
-            .limit(1) \
-            .stream()
-
-        if list(existing):
-            continue
-
-        db.collection('matches').add({
-            'foundItemId': found_id,
-            'lostItemId': lost_id,
-            'foundUserId': user_id if session.get('type') == 'found' else other_user_id,
-            'lostUserId': other_user_id if session.get('type') == 'found' else user_id,
-            'status': 'notified',
-            'createdAt': firestore.SERVER_TIMESTAMP
+def build_confirm_flex(selected_items):
+    item_lines = []
+    for item in selected_items:
+        item_type = "撿到" if item.get('type') == 'found' else "遺失"
+        item_lines.append({
+            "type": "text",
+            "text": f"• 【{item_type}】{item.get('category', '')} - {item.get('description', '')[:30]}",
+            "wrap": True, "size": "sm", "margin": "sm"
         })
 
-        # 通知對方
-        try:
-            messages = [
-                TextSendMessage(
-                    text=f"🔔 有人登記了{my_type}的{category}，可能跟你的有關！\n\n"
-                         f"描述：{session.get('description')}\n"
-                         f"地點：{session.get('location')}\n\n"
-                         f"請回覆「選單」查看更多"
-                )
+    bubble = {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "md",
+            "contents": [
+                {"type": "text", "text": "⚠️ 確認你的選擇",
+                 "weight": "bold", "size": "lg", "align": "center"},
+                {"type": "text", "text": "以下物品將被標記為已找回：",
+                 "size": "sm", "color": "#666666", "wrap": True},
+                {"type": "separator", "margin": "md"},
+                *item_lines,
+                {"type": "separator", "margin": "md"}
             ]
-            if session.get('photo'):
-                messages.append(ImageSendMessage(
-                    original_content_url=session.get('photo'),
-                    preview_image_url=session.get('photo')
-                ))
-            line_bot_api.push_message(other_user_id, messages)
-        except Exception as e:
-            app.logger.error(f"通知對方失敗: {e}")
-
-        # 通知自己
-        try:
-            messages = [
-                TextSendMessage(
-                    text=f"🔔 資料庫裡有一筆{other_type}的{category}可能符合！\n\n"
-                         f"描述：{match_data.get('description')}\n"
-                         f"地點：{match_data.get('location')}\n\n"
-                         f"請回覆「選單」查看更多"
-                )
+        },
+        "footer": {
+            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "contents": [
+                {"type": "button", "style": "secondary", "flex": 1,
+                 "action": {"type": "postback", "label": "返回",
+                            "data": "action=back", "displayText": "返回"}},
+                {"type": "button", "style": "primary", "color": "#FF9800", "flex": 1,
+                 "action": {"type": "postback", "label": "確定",
+                            "data": "action=final_confirm", "displayText": "確定送出"}}
             ]
-            if match_data.get('photo'):
-                messages.append(ImageSendMessage(
-                    original_content_url=match_data.get('photo'),
-                    preview_image_url=match_data.get('photo')
-                ))
-            line_bot_api.push_message(user_id, messages)
-        except Exception as e:
-            app.logger.error(f"通知自己失敗: {e}")
+        }
+    }
+    return FlexSendMessage(alt_text="確認選擇", contents=bubble)
 
 
-@app.route("/", methods=['POST'])
-def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
+def build_readonly_list_flex(items):
+    if not items:
+        return TextSendMessage(text="🎉 目前沒有未處理的失物了！")
+
+    contents = []
+    for idx, item in enumerate(items):
+        item_type = "撿到" if item.get('type') == 'found' else "遺失"
+        contents.append({
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": f"📦 【{item_type}】{item.get('category', '')}",
+                 "weight": "bold", "size": "sm"},
+                {"type": "text", "text": item.get('description', '')[:50],
+                 "wrap": True, "size": "xs", "color": "#666666"}
+            ]
+        })
+        if idx < len(items) - 1:
+            contents.append({"type": "separator", "margin": "sm"})
+
+    bubble = {
+        "type": "bubble",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "✅ 已更新",
+                 "weight": "bold", "size": "lg", "align": "center"},
+                {"type": "text", "text": "勾選的物品已被移除，剩餘清單如下",
+                 "size": "xs", "color": "#888888", "align": "center", "wrap": True}
+            ]
+        },
+        "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": contents}
+    }
+    return FlexSendMessage(alt_text="剩餘清單", contents=bubble)
 
 
-@handler.add(FollowEvent)
-def handle_follow(event):
-    user_id = event.source.user_id
-    profile = line_bot_api.get_profile(user_id)
-    create_or_update_user(user_id, profile.display_name)
-    line_bot_api.reply_message(
-        event.reply_token,
-        [
-            TextSendMessage(text=f"歡迎 {profile.display_name}！👋\n使用失物招領服務"),
-            get_main_menu()
-        ]
-    )
-
-
-@handler.add(MessageEvent, message=ImageMessage)
-def handle_image(event):
-    user_id = event.source.user_id
-    session = get_session(user_id)
-    step = session.get("step")
-
-    if step == "wait_photo":
-        message_content = line_bot_api.get_message_content(event.message.id)
-        image_data = b"".join(chunk for chunk in message_content.iter_content())
-
-        upload_result = cloudinary.uploader.upload(
-            image_data,
-            folder="linebot-lost-found"
-        )
-        image_url = upload_result.get('secure_url')
-
-        session["photo"] = image_url
-        session["step"] = "wait_location"
-        set_session(user_id, session)
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="照片已上傳 ✅\n\n📍 最後，請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
-        )
-    else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="請先從選單開始 😊")
-        )
-
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
+# ============ 文字訊息處理 ============
+def handle_message(user_id, text):
+    text = text.strip()
     session = get_session(user_id)
     step = session.get("step")
 
     if text in ["選單", "開始", "menu", "取消"]:
         clear_session(user_id)
-        line_bot_api.reply_message(event.reply_token, get_main_menu())
+        line_bot_api.reply_message(None, get_main_menu())
         return
 
     if text == "我撿到東西了":
         set_session(user_id, {"type": "found", "step": "wait_category"})
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="好的！請問撿到的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他")
-        )
-
+        line_bot_api.reply_message(None, TextSendMessage(
+            text="好的！請問撿到的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他"))
     elif text == "我在找東西":
         set_session(user_id, {"type": "lost", "step": "wait_category"})
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="沒關係！請問遺失的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他")
-        )
-    
+        line_bot_api.reply_message(None, TextSendMessage(
+            text="沒關係！請問遺失的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他"))
     elif text == "我找到了":
-        items = db.collection('items').where('status', '==', 'open').limit(5).stream()
-
-        contents = []
-
-        for item in items:
-            d = item.to_dict()
-            item_type = "撿到" if d.get('type') == 'found' else "遺失"
-
-            contents.append({
-                "type": "button",
-                "style": "primary",
-                "action": {
-                    "type": "message",
-                    "label": f"{d.get('category')} - {d.get('description')}",
-                    "text": f"選擇 {item.id}"
-                }
-            })
-
-        if contents:
-            flex = {
-                "type": "bubble",
-                "body": {
-                    "type": "box",
-                    "layout": "vertical",
-                    "spacing": "md",
-                    "contents": [
-                        {
-                            "type": "text",
-                            "text": "✅ 請選擇你已找回的物品",
-                            "weight": "bold",
-                            "size": "lg"
-                        }
-                    ] + contents
-                }
-            }
-
-            line_bot_api.reply_message(
-                event.reply_token,
-                FlexSendMessage(alt_text="選擇物品", contents=flex)
-            )
-        else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="目前沒有可選擇的失物 😊")
-            )
-
-    elif text.startswith("選擇 "):
-        item_id = text.replace("選擇 ", "").strip()
-        session["confirm_delete_id"] = item_id
-        set_session(user_id, session)
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="你確定要將這筆物品標記為已找回嗎？\n\n請回覆：確認刪除")
-        )
-
-    elif text == "確認刪除":
-        item_id = session.get("confirm_delete_id")
-
-        if not item_id:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="找不到要處理的物品，請重新選擇。")
-            )
+        items = get_open_items_for_found()
+        if not items:
+            clear_session(user_id)
+            line_bot_api.reply_message(None, TextSendMessage(text="目前沒有可選擇的失物 😊"))
             return
-
-        db.collection('items').document(item_id).update({
-            'status': 'closed'
-        })
-
-        clear_session(user_id)
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="✅ 已確認找回，這筆物品已從清單中移除。")
-        )
-
-
+        set_session(user_id, {"step": "selecting_found", "selected_items": []})
+        line_bot_api.reply_message(None, build_lost_items_flex(items, []))
     elif text == "查看所有失物":
         items = db.collection('items').where('status', '==', 'open').limit(5).stream()
         result = []
@@ -409,84 +463,144 @@ def handle_message(event):
             d = item.to_dict()
             item_type = "撿到" if d.get('type') == 'found' else "遺失"
             result.append(f"【{item_type}】{d.get('category')} - {d.get('description')} @ {d.get('location')}")
-
         if result:
             reply = "📋 目前的失物清單：\n\n" + "\n\n".join(result)
         else:
             reply = "目前沒有任何登記的失物 😊"
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply)
-        )
-
+        line_bot_api.reply_message(None, TextSendMessage(text=reply))
     elif step == "wait_category":
         if text in CATEGORIES:
             session["category"] = CATEGORIES[text]
             session["step"] = "wait_description"
             set_session(user_id, session)
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"分類：{CATEGORIES[text]} ✅\n\n請描述一下這個物品的外觀特徵（顏色、品牌、特殊記號等）")
-            )
+            line_bot_api.reply_message(None, TextSendMessage(
+                text=f"分類：{CATEGORIES[text]} ✅\n\n請描述一下這個物品的外觀特徵（顏色、品牌、特殊記號等）"))
         else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="請回覆 1~5 的數字選擇分類 😊")
-            )
-
+            line_bot_api.reply_message(None, TextSendMessage(text="請回覆 1~5 的數字選擇分類 😊"))
     elif step == "wait_description":
         session["description"] = text
         session["step"] = "wait_photo"
         set_session(user_id, session)
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="描述已記錄 ✅\n\n請上傳物品照片（若沒有照片請回覆「略過」）")
-        )
-
+        line_bot_api.reply_message(None, TextSendMessage(
+            text="描述已記錄 ✅\n\n請上傳物品照片（若沒有照片請回覆「略過」）"))
     elif step == "wait_photo" and text == "略過":
         session["photo"] = None
         session["step"] = "wait_location"
         set_session(user_id, session)
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="📍 請問在哪裡撿到／遺失的？\n\n請用文字描述地點（例如：圖書館一樓、學生餐廳門口）")
-        )
-
+        line_bot_api.reply_message(None, TextSendMessage(
+            text="📍 請問在哪裡撿到／遺失的？\n\n請用文字描述地點"))
     elif step == "wait_location":
         session["location"] = text
         set_session(user_id, session)
-
         item_id = save_item(user_id, session)
-        match_and_notify(user_id, session, item_id)
         clear_session(user_id)
-
         item_type = "撿到" if session.get("type") == "found" else "遺失"
-        summary = (
-            f"✅ 登記完成！已儲存到資料庫\n\n"
-            f"類型：{item_type}\n"
-            f"分類：{session.get('category')}\n"
-            f"描述：{session.get('description')}\n"
-            f"地點：{text}\n\n"
-            f"我們會幫你比對，有符合的會通知你！"
-        )
-        line_bot_api.reply_message(
-            event.reply_token,
-            [
-                TextSendMessage(text=summary),
-                get_main_menu()
-            ]
-        )
-
+        summary = (f"✅ 登記完成！\n\n類型：{item_type}\n分類：{session.get('category')}\n"
+                   f"描述：{session.get('description')}\n地點：{text}")
+        line_bot_api.reply_message(None, [TextSendMessage(text=summary), get_main_menu()])
     else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            [
-                TextSendMessage(text="請使用下方選單操作 👇"),
-                get_main_menu()
-            ]
-        )
+        line_bot_api.reply_message(None, [TextSendMessage(text="請使用下方選單操作 👇"), get_main_menu()])
+
+
+def handle_postback(user_id, data):
+    params = parse_qs(data)
+    action = params.get('action', [''])[0]
+    session = get_session(user_id)
+
+    if action == 'toggle':
+        item_id = params.get('id', [''])[0]
+        selected = session.get('selected_items', [])
+        if item_id in selected:
+            selected.remove(item_id)
+        else:
+            selected.append(item_id)
+        session['selected_items'] = selected
+        session['step'] = 'selecting_found'
+        set_session(user_id, session)
+        items = get_open_items_for_found()
+        line_bot_api.reply_message(None, build_lost_items_flex(items, selected))
+    elif action == 'confirm':
+        selected = session.get('selected_items', [])
+        if not selected:
+            line_bot_api.reply_message(None, TextSendMessage(text="你還沒勾選任何物品喔 😊"))
+            return
+        items = get_open_items_for_found()
+        selected_items = [i for i in items if i['id'] in selected]
+        line_bot_api.reply_message(None, build_confirm_flex(selected_items))
+    elif action == 'back':
+        items = get_open_items_for_found()
+        selected = session.get('selected_items', [])
+        line_bot_api.reply_message(None, build_lost_items_flex(items, selected))
+    elif action == 'final_confirm':
+        selected = session.get('selected_items', [])
+        for item_id in selected:
+            db.collection('items').document(item_id).update({
+                'status': 'closed',
+                'closedAt': firestore.SERVER_TIMESTAMP
+            })
+        clear_session(user_id)
+        items = get_open_items_for_found()
+        line_bot_api.reply_message(None, build_readonly_list_flex(items))
+
+
+# ============ 主程式：互動式終端機 ============
+def main():
+    seed_data()
+    user_id = "test_user"
+
+    print("=" * 60)
+    print("🤖 LINE Bot 模擬器 啟動")
+    print("=" * 60)
+    print("操作方式：")
+    print("  - 直接輸入文字（例如：選單、我找到了）")
+    print("  - 點按鈕：輸入 >1, >2, >3 ...")
+    print("  - 查看狀態：dump")
+    print("  - 離開：q")
+    print("=" * 60)
+    print("\n💡 已預設 5 筆假物品在資料庫中，直接打「我找到了」開始測試\n")
+
+    while True:
+        try:
+            user_input = input("\n👤 你 > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再見！")
+            break
+
+        if not user_input:
+            continue
+        if user_input == 'q':
+            print("再見！")
+            break
+        if user_input == 'dump':
+            print("\n📊 === 目前資料庫狀態 ===")
+            print(f"\n[Session of {user_id}]")
+            print(f"  {get_session(user_id)}")
+            print(f"\n[Items]")
+            for item_id, item in db.collections['items'].items():
+                print(f"  {item_id}: {item.get('status'):6} | {item.get('type'):5} | "
+                      f"{item.get('category')} - {item.get('description', '')[:30]}")
+            continue
+
+        # 點按鈕
+        if user_input.startswith('>'):
+            try:
+                idx = int(user_input[1:]) - 1
+                if 0 <= idx < len(line_bot_api.last_buttons):
+                    btn = line_bot_api.last_buttons[idx]
+                    print(f"   [點擊：{btn['label']}]")
+                    if btn['type'] == 'message':
+                        handle_message(user_id, btn['text'])
+                    elif btn['type'] == 'postback':
+                        handle_postback(user_id, btn['data'])
+                else:
+                    print(f"   ⚠️  沒有編號 {idx+1} 的按鈕")
+            except ValueError:
+                print("   ⚠️  格式錯誤，要打 >1 >2 這樣")
+            continue
+
+        # 一般訊息
+        handle_message(user_id, user_input)
 
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+    main()
