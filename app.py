@@ -3,237 +3,244 @@ import json
 import os
 from urllib.parse import parse_qs
 
-
-# ============ 假資料庫（用 dict 模擬 Firestore）============
-class FakeDB:
-    def __init__(self):
-        self.collections = {
-            'items': {},      # id -> dict
-            'sessions': {},   # user_id -> dict
-            'users': {},
-            'matches': {}
-        }
-
-    def collection(self, name):
-        return FakeCollection(self, name)
+from flask import Flask, request, abort
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import (
+    MessageEvent, TextMessage, PostbackEvent, TextSendMessage, FlexSendMessage
+)
 
 
-class FakeCollection:
-    def __init__(self, db, name):
-        self.db = db
-        self.name = name
-        self._filters = []
-        self._limit = None
+# # ============ 假資料庫（用 dict 模擬 Firestore）============
+# class FakeDB:
+#     def __init__(self):
+#         self.collections = {
+#             'items': {},      # id -> dict
+#             'sessions': {},   # user_id -> dict
+#             'users': {},
+#             'matches': {}
+#         }
 
-    def document(self, doc_id):
-        return FakeDoc(self.db, self.name, doc_id)
-
-    def where(self, field, op, value):
-        new = FakeCollection(self.db, self.name)
-        new._filters = self._filters + [(field, op, value)]
-        new._limit = self._limit
-        return new
-
-    def limit(self, n):
-        new = FakeCollection(self.db, self.name)
-        new._filters = self._filters
-        new._limit = n
-        return new
-
-    def stream(self):
-        results = []
-        for doc_id, data in self.db.collections[self.name].items():
-            ok = True
-            for field, op, value in self._filters:
-                if op == '==' and data.get(field) != value:
-                    ok = False
-                    break
-            if ok:
-                results.append(FakeSnapshot(doc_id, data))
-        if self._limit:
-            results = results[:self._limit]
-        return iter(results)
-
-    def add(self, data):
-        new_id = str(uuid.uuid4())[:8]
-        self.db.collections[self.name][new_id] = data
-        return (None, FakeDoc(self.db, self.name, new_id))
+#     def collection(self, name):
+#         return FakeCollection(self, name)
 
 
-class FakeDoc:
-    def __init__(self, db, collection_name, doc_id):
-        self.db = db
-        self.collection_name = collection_name
-        self.id = doc_id
+# class FakeCollection:
+#     def __init__(self, db, name):
+#         self.db = db
+#         self.name = name
+#         self._filters = []
+#         self._limit = None
 
-    def get(self):
-        data = self.db.collections[self.collection_name].get(self.id)
-        return FakeSnapshot(self.id, data) if data is not None else FakeSnapshot(self.id, None)
+#     def document(self, doc_id):
+#         return FakeDoc(self.db, self.name, doc_id)
 
-    def set(self, data):
-        self.db.collections[self.collection_name][self.id] = data
+#     def where(self, field, op, value):
+#         new = FakeCollection(self.db, self.name)
+#         new._filters = self._filters + [(field, op, value)]
+#         new._limit = self._limit
+#         return new
 
-    def update(self, data):
-        if self.id in self.db.collections[self.collection_name]:
-            self.db.collections[self.collection_name][self.id].update(data)
+#     def limit(self, n):
+#         new = FakeCollection(self.db, self.name)
+#         new._filters = self._filters
+#         new._limit = n
+#         return new
 
-    def delete(self):
-        self.db.collections[self.collection_name].pop(self.id, None)
+#     def stream(self):
+#         results = []
+#         for doc_id, data in self.db.collections[self.name].items():
+#             ok = True
+#             for field, op, value in self._filters:
+#                 if op == '==' and data.get(field) != value:
+#                     ok = False
+#                     break
+#             if ok:
+#                 results.append(FakeSnapshot(doc_id, data))
+#         if self._limit:
+#             results = results[:self._limit]
+#         return iter(results)
 
-
-class FakeSnapshot:
-    def __init__(self, doc_id, data):
-        self.id = doc_id
-        self._data = data
-
-    @property
-    def exists(self):
-        return self._data is not None
-
-    def to_dict(self):
-        return self._data
-
-
-db = FakeDB()
-
-
-# ============ 預設塞一些假資料（5 筆遺失物，方便測試）============
-def seed_data():
-    sample_items = [
-        {'userId': 'u1', 'type': 'lost', 'category': '電子產品',
-         'description': '黑色 iPhone 14，背蓋有貼貓貼紙', 'photo': None,
-         'location': '圖書館一樓', 'status': 'open'},
-        {'userId': 'u2', 'type': 'found', 'category': '鑰匙',
-         'description': '一串鑰匙，有藍色吊飾', 'photo': None,
-         'location': '學生餐廳', 'status': 'open'},
-        {'userId': 'u1', 'type': 'lost', 'category': '證件錢包',
-         'description': '咖啡色長夾，裡面有學生證', 'photo': None,
-         'location': '系館 305 教室', 'status': 'open'},
-        {'userId': 'u3', 'type': 'lost', 'category': '衣物配件',
-         'description': '黑色 Nike 帽子', 'photo': None,
-         'location': '操場', 'status': 'open'},
-        {'userId': 'u2', 'type': 'found', 'category': '其他',
-         'description': '一把藍色雨傘', 'photo': None,
-         'location': '校門口', 'status': 'open'},
-    ]
-    for item in sample_items:
-        db.collection('items').add(item)
+#     def add(self, data):
+#         new_id = str(uuid.uuid4())[:8]
+#         self.db.collections[self.name][new_id] = data
+#         return (None, FakeDoc(self.db, self.name, new_id))
 
 
-# ============ 假的 LINE SDK ============
-class FakeSendMessage:
-    pass
+# class FakeDoc:
+#     def __init__(self, db, collection_name, doc_id):
+#         self.db = db
+#         self.collection_name = collection_name
+#         self.id = doc_id
+
+#     def get(self):
+#         data = self.db.collections[self.collection_name].get(self.id)
+#         return FakeSnapshot(self.id, data) if data is not None else FakeSnapshot(self.id, None)
+
+#     def set(self, data):
+#         self.db.collections[self.collection_name][self.id] = data
+
+#     def update(self, data):
+#         if self.id in self.db.collections[self.collection_name]:
+#             self.db.collections[self.collection_name][self.id].update(data)
+
+#     def delete(self):
+#         self.db.collections[self.collection_name].pop(self.id, None)
 
 
-class TextSendMessage(FakeSendMessage):
-    def __init__(self, text):
-        self.text = text
+# class FakeSnapshot:
+#     def __init__(self, doc_id, data):
+#         self.id = doc_id
+#         self._data = data
 
-    def render(self):
-        return f"💬 {self.text}"
+#     @property
+#     def exists(self):
+#         return self._data is not None
 
-
-class ImageSendMessage(FakeSendMessage):
-    def __init__(self, original_content_url, preview_image_url):
-        self.url = original_content_url
-
-    def render(self):
-        return f"🖼️  [圖片] {self.url}"
+#     def to_dict(self):
+#         return self._data
 
 
-class FlexSendMessage(FakeSendMessage):
-    def __init__(self, alt_text, contents):
-        self.alt_text = alt_text
-        self.contents = contents
-
-    def render(self):
-        """把 Flex Message 渲染成文字版+按鈕清單"""
-        lines = [f"\n📦 [Flex: {self.alt_text}]"]
-        lines.append("─" * 50)
-
-        # 取出 header
-        bubble = self.contents
-        header = bubble.get('header', {})
-        if header:
-            for c in header.get('contents', []):
-                if c.get('type') == 'text':
-                    lines.append(f"  {c.get('text', '')}")
-            lines.append("─" * 50)
-
-        # 取出 body
-        body = bubble.get('body', {})
-        buttons = []
-        for c in body.get('contents', []):
-            extract_text_and_buttons(c, lines, buttons, indent="  ")
-
-        # 取出 footer
-        footer = bubble.get('footer', {})
-        if footer:
-            lines.append("─" * 50)
-            for c in footer.get('contents', []):
-                extract_text_and_buttons(c, lines, buttons, indent="  ")
-
-        # 列出可點擊的按鈕
-        if buttons:
-            lines.append("")
-            lines.append("👉 可點按鈕（輸入 >編號 來點）：")
-            for idx, btn in enumerate(buttons, 1):
-                lines.append(f"   >{idx}  {btn['label']}")
-
-        return "\n".join(lines), buttons
+# db = FakeDB()
 
 
-def extract_text_and_buttons(node, lines, buttons, indent=""):
-    """遞迴從 Flex 節點取出文字和按鈕"""
-    if not isinstance(node, dict):
-        return
-    t = node.get('type')
-    if t == 'text':
-        text = node.get('text', '').replace('\n', f'\n{indent}')
-        lines.append(f"{indent}{text}")
-    elif t == 'separator':
-        lines.append(f"{indent}─────")
-    elif t == 'button':
-        action = node.get('action', {})
-        label = action.get('label', '?')
-        action_type = action.get('type')
-        if action_type == 'message':
-            buttons.append({'label': label, 'type': 'message', 'text': action.get('text')})
-        elif action_type == 'postback':
-            buttons.append({'label': label, 'type': 'postback', 'data': action.get('data')})
-    elif t == 'box':
-        for c in node.get('contents', []):
-            extract_text_and_buttons(c, lines, buttons, indent=indent)
+# # ============ 預設塞一些假資料（5 筆遺失物，方便測試）============
+# def seed_data():
+#     sample_items = [
+#         {'userId': 'u1', 'type': 'lost', 'category': '電子產品',
+#          'description': '黑色 iPhone 14，背蓋有貼貓貼紙', 'photo': None,
+#          'location': '圖書館一樓', 'status': 'open'},
+#         {'userId': 'u2', 'type': 'found', 'category': '鑰匙',
+#          'description': '一串鑰匙，有藍色吊飾', 'photo': None,
+#          'location': '學生餐廳', 'status': 'open'},
+#         {'userId': 'u1', 'type': 'lost', 'category': '證件錢包',
+#          'description': '咖啡色長夾，裡面有學生證', 'photo': None,
+#          'location': '系館 305 教室', 'status': 'open'},
+#         {'userId': 'u3', 'type': 'lost', 'category': '衣物配件',
+#          'description': '黑色 Nike 帽子', 'photo': None,
+#          'location': '操場', 'status': 'open'},
+#         {'userId': 'u2', 'type': 'found', 'category': '其他',
+#          'description': '一把藍色雨傘', 'photo': None,
+#          'location': '校門口', 'status': 'open'},
+#     ]
+#     for item in sample_items:
+#         db.collection('items').add(item)
 
 
-class FakeLineBotApi:
-    """模擬 LINE Bot API，把訊息印在螢幕上"""
-    def __init__(self):
-        self.last_buttons = []  # 最近一次回的按鈕列表
-
-    def reply_message(self, reply_token, messages):
-        if not isinstance(messages, list):
-            messages = [messages]
-        all_buttons = []
-        for msg in messages:
-            if isinstance(msg, FlexSendMessage):
-                rendered, buttons = msg.render()
-                print(rendered)
-                all_buttons.extend(buttons)
-            else:
-                print(msg.render())
-        self.last_buttons = all_buttons
+# # ============ 假的 LINE SDK ============
+# class FakeSendMessage:
+#     pass
 
 
-line_bot_api = FakeLineBotApi()
+# class TextSendMessage(FakeSendMessage):
+#     def __init__(self, text):
+#         self.text = text
+
+#     def render(self):
+#         return f"💬 {self.text}"
 
 
-# ============ 模擬的 firestore.SERVER_TIMESTAMP ============
-class FakeFirestore:
-    SERVER_TIMESTAMP = "[SERVER_TIMESTAMP]"
+# class ImageSendMessage(FakeSendMessage):
+#     def __init__(self, original_content_url, preview_image_url):
+#         self.url = original_content_url
+
+#     def render(self):
+#         return f"🖼️  [圖片] {self.url}"
 
 
-firestore = FakeFirestore()
+# class FlexSendMessage(FakeSendMessage):
+#     def __init__(self, alt_text, contents):
+#         self.alt_text = alt_text
+#         self.contents = contents
+
+#     def render(self):
+#         """把 Flex Message 渲染成文字版+按鈕清單"""
+#         lines = [f"\n📦 [Flex: {self.alt_text}]"]
+#         lines.append("─" * 50)
+
+#         # 取出 header
+#         bubble = self.contents
+#         header = bubble.get('header', {})
+#         if header:
+#             for c in header.get('contents', []):
+#                 if c.get('type') == 'text':
+#                     lines.append(f"  {c.get('text', '')}")
+#             lines.append("─" * 50)
+
+#         # 取出 body
+#         body = bubble.get('body', {})
+#         buttons = []
+#         for c in body.get('contents', []):
+#             extract_text_and_buttons(c, lines, buttons, indent="  ")
+
+#         # 取出 footer
+#         footer = bubble.get('footer', {})
+#         if footer:
+#             lines.append("─" * 50)
+#             for c in footer.get('contents', []):
+#                 extract_text_and_buttons(c, lines, buttons, indent="  ")
+
+#         # 列出可點擊的按鈕
+#         if buttons:
+#             lines.append("")
+#             lines.append("👉 可點按鈕（輸入 >編號 來點）：")
+#             for idx, btn in enumerate(buttons, 1):
+#                 lines.append(f"   >{idx}  {btn['label']}")
+
+#         return "\n".join(lines), buttons
+
+
+# def extract_text_and_buttons(node, lines, buttons, indent=""):
+#     """遞迴從 Flex 節點取出文字和按鈕"""
+#     if not isinstance(node, dict):
+#         return
+#     t = node.get('type')
+#     if t == 'text':
+#         text = node.get('text', '').replace('\n', f'\n{indent}')
+#         lines.append(f"{indent}{text}")
+#     elif t == 'separator':
+#         lines.append(f"{indent}─────")
+#     elif t == 'button':
+#         action = node.get('action', {})
+#         label = action.get('label', '?')
+#         action_type = action.get('type')
+#         if action_type == 'message':
+#             buttons.append({'label': label, 'type': 'message', 'text': action.get('text')})
+#         elif action_type == 'postback':
+#             buttons.append({'label': label, 'type': 'postback', 'data': action.get('data')})
+#     elif t == 'box':
+#         for c in node.get('contents', []):
+#             extract_text_and_buttons(c, lines, buttons, indent=indent)
+
+
+# class FakeLineBotApi:
+#     """模擬 LINE Bot API，把訊息印在螢幕上"""
+#     def __init__(self):
+#         self.last_buttons = []  # 最近一次回的按鈕列表
+
+#     def reply_message(self, reply_token, messages):
+#         if not isinstance(messages, list):
+#             messages = [messages]
+#         all_buttons = []
+#         for msg in messages:
+#             if isinstance(msg, FlexSendMessage):
+#                 rendered, buttons = msg.render()
+#                 print(rendered)
+#                 all_buttons.extend(buttons)
+#             else:
+#                 print(msg.render())
+#         self.last_buttons = all_buttons
+
+
+# line_bot_api = FakeLineBotApi()
+
+
+# # ============ 模擬的 firestore.SERVER_TIMESTAMP ============
+# class FakeFirestore:
+#     SERVER_TIMESTAMP = "[SERVER_TIMESTAMP]"
+
+
+# firestore = FakeFirestore()
 
 
 # ============ 以下是從 app.py 抽出來的核心邏輯（去掉 LINE/Firebase 依賴）============
