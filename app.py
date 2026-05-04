@@ -256,6 +256,19 @@ def set_session(user_id, data):
 def clear_session(user_id):
     db.collection('sessions').document(user_id).delete()
 
+def get_photo_flex():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, 'photo.json')
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        contents = json.load(f)
+    return FlexSendMessage(alt_text="請上傳照片", contents=contents)
+
+def get_location_flex(item_type):
+    filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
+    with open(filename, 'r', encoding='utf-8') as f:
+        contents = json.load(f)
+    return FlexSendMessage(alt_text="請選擇地點", contents=contents)
 
 def get_main_menu():
     flex_content = {
@@ -479,35 +492,89 @@ def handle_message(user_id, text):
             line_bot_api.reply_message(None, TextSendMessage(text="請回覆 1~5 的數字選擇分類 😊"))
     elif step == "wait_description":
         session["description"] = text
-        session["step"] = "wait_photo"
-        set_session(user_id, session)
-        line_bot_api.reply_message(None, TextSendMessage(
-            text="描述已記錄 ✅\n\n請上傳物品照片（若沒有照片請回覆「略過」）"))
+
+        # 🌟 判斷是「尋找遺失物」還是「撿到東西」
+        if session.get("type") == "lost":
+            # === 【尋找遺失物】跳過拍照，直接彈出地點選擇按鈕 ===
+            session["step"] = "wait_location_button"
+            set_session(user_id, session)
+            flex_msg = get_location_flex(session.get("type"))
+            line_bot_api.reply_message(None, flex_msg)
+
+        else:
+            # === 【撿到東西】進入拍照步驟，彈出拍照按鈕 ===
+            session["step"] = "wait_photo"
+            set_session(user_id, session)
+            flex_msg = get_photo_flex()
+            line_bot_api.reply_message(None, flex_msg)
     elif step == "wait_photo" and text == "略過":
         session["photo"] = None
-        session["step"] = "wait_location"
+        session["step"] = "wait_location_button" # 更改 step 名稱，代表正在等待按鈕點擊
         set_session(user_id, session)
-        line_bot_api.reply_message(None, TextSendMessage(
-            text="📍 請問在哪裡撿到／遺失的？\n\n請用文字描述地點"))
-    elif step == "wait_location":
-        session["location"] = text
+        # 改為傳送你設計好的 Flex Message 按鈕
+        flex_msg = get_location_flex(session.get("type"))
+        line_bot_api.reply_message(None, flex_msg)
+    elif step == "wait_detailed_location":
+        detailed_loc = text
+        # 將大範圍與詳細描述組合起來
+        final_location = f"{session.get('broad_location')} - {detailed_loc}"
+
+        session["location"] = final_location
         set_session(user_id, session)
         item_id = save_item(user_id, session)
         clear_session(user_id)
+
         item_type = "撿到" if session.get("type") == "found" else "遺失"
         summary = (f"✅ 登記完成！\n\n類型：{item_type}\n分類：{session.get('category')}\n"
-                   f"描述：{session.get('description')}\n地點：{text}")
+                   f"描述：{session.get('description')}\n地點：{final_location}")
         line_bot_api.reply_message(None, [TextSendMessage(text=summary), get_main_menu()])
     else:
         line_bot_api.reply_message(None, [TextSendMessage(text="請使用下方選單操作 👇"), get_main_menu()])
-
 
 def handle_postback(user_id, data):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
     session = get_session(user_id)
 
-    if action == 'toggle':
+    if action == 'set_location':
+        broad_location = params.get('loc', [''])[0]
+        session['broad_location'] = broad_location
+
+        if session.get('type') == 'lost':
+            # === 【尋找遺失物流程】不存入資料庫，直接搜尋 ===
+
+            # 從假資料庫尋找：狀態是open + 類型是撿到(found) + 分類跟你遺失的一樣
+            matched_docs = db.collection('items') \
+                .where('status', '==', 'open') \
+                .where('type', '==', 'found') \
+                .where('category', '==', session.get('category')) \
+                .stream()
+
+            match_results = []
+            for d in matched_docs:
+                data = d.to_dict()
+                match_results.append(f"📦 {data.get('description')}\n📍 地點：{data.get('location')}")
+
+            if match_results:
+                match_text = f"🔍 系統為您比對到以下「目前有人撿到」的相似物品：\n\n" + "\n\n".join(match_results)
+            else:
+                # 拿掉登記協尋的文字
+                match_text = f"目前在「{broad_location}」附近沒有人撿到類似的物品 🥺"
+
+            clear_session(user_id) # 清除狀態
+            line_bot_api.reply_message(None, [
+                TextSendMessage(text=match_text),
+                get_main_menu()
+            ])
+
+        else:
+            # === 【撿到東西流程】繼續問詳細地點 ===
+            session['step'] = 'wait_detailed_location'
+            set_session(user_id, session)
+
+            line_bot_api.reply_message(None, TextSendMessage(
+                text=f"已選擇大範圍：{broad_location} ✅\n\n請輸入更詳細的地點描述（例如：靠近大樹的長椅上、警衛室旁）："))
+    elif action == 'toggle':
         item_id = params.get('id', [''])[0]
         selected = session.get('selected_items', [])
         if item_id in selected:
@@ -541,7 +608,6 @@ def handle_postback(user_id, data):
         clear_session(user_id)
         items = get_open_items_for_found()
         line_bot_api.reply_message(None, build_readonly_list_flex(items))
-
 
 # ============ 主程式：互動式終端機 ============
 def main():
