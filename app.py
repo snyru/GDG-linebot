@@ -610,64 +610,64 @@ def handle_postback(user_id, data):
         items = get_open_items_for_found()
         line_bot_api.reply_message(None, build_readonly_list_flex(items))
 
-# ============ 主程式：互動式終端機 ============
-def main():
-    seed_data()
-    user_id = "test_user"
+# # ============ 主程式：互動式終端機 ============
+# def main():
+#     seed_data()
+#     user_id = "test_user"
 
-    print("=" * 60)
-    print("🤖 LINE Bot 模擬器 啟動")
-    print("=" * 60)
-    print("操作方式：")
-    print("  - 直接輸入文字（例如：選單、我找到了）")
-    print("  - 點按鈕：輸入 >1, >2, >3 ...")
-    print("  - 查看狀態：dump")
-    print("  - 離開：q")
-    print("=" * 60)
-    print("\n💡 已預設 5 筆假物品在資料庫中，直接打「我找到了」開始測試\n")
+#     print("=" * 60)
+#     print("🤖 LINE Bot 模擬器 啟動")
+#     print("=" * 60)
+#     print("操作方式：")
+#     print("  - 直接輸入文字（例如：選單、我找到了）")
+#     print("  - 點按鈕：輸入 >1, >2, >3 ...")
+#     print("  - 查看狀態：dump")
+#     print("  - 離開：q")
+#     print("=" * 60)
+#     print("\n💡 已預設 5 筆假物品在資料庫中，直接打「我找到了」開始測試\n")
 
-    # while True:
-    #     try:
-    #         user_input = input("\n👤 你 > ").strip()
-    #     except (EOFError, KeyboardInterrupt):
-    #         print("\n再見！")
-    #         break
+#     while True:
+#         try:
+#             user_input = input("\n👤 你 > ").strip()
+#         except (EOFError, KeyboardInterrupt):
+#             print("\n再見！")
+#             break
 
-    #     if not user_input:
-    #         continue
-    #     if user_input == 'q':
-    #         print("再見！")
-    #         break
-    #     if user_input == 'dump':
-    #         print("\n📊 === 目前資料庫狀態 ===")
-    #         print(f"\n[Session of {user_id}]")
-    #         print(f"  {get_session(user_id)}")
-    #         print(f"\n[Items]")
-    #         for item_id, item in db.collections['items'].items():
-    #             print(f"  {item_id}: {item.get('status'):6} | {item.get('type'):5} | "
-    #                   f"{item.get('category')} - {item.get('description', '')[:30]}")
-    #         continue
+#         if not user_input:
+#             continue
+#         if user_input == 'q':
+#             print("再見！")
+#             break
+#         if user_input == 'dump':
+#             print("\n📊 === 目前資料庫狀態 ===")
+#             print(f"\n[Session of {user_id}]")
+#             print(f"  {get_session(user_id)}")
+#             print(f"\n[Items]")
+#             for item_id, item in db.collections['items'].items():
+#                 print(f"  {item_id}: {item.get('status'):6} | {item.get('type'):5} | "
+#                       f"{item.get('category')} - {item.get('description', '')[:30]}")
+#             continue
 
-    #     # 點按鈕
-    #     if user_input.startswith('>'):
-    #         try:
-    #             idx = int(user_input[1:]) - 1
-    #             if 0 <= idx < len(line_bot_api.last_buttons):
-    #                 btn = line_bot_api.last_buttons[idx]
-    #                 print(f"   [點擊：{btn['label']}]")
-    #                 if btn['type'] == 'message':
-    #                     handle_message(user_id, btn['text'])
-    #                 elif btn['type'] == 'postback':
-    #                     handle_postback(user_id, btn['data'])
-    #             else:
-    #                 print(f"   ⚠️  沒有編號 {idx+1} 的按鈕")
-    #         except ValueError:
-    #             print("   ⚠️  格式錯誤，要打 >1 >2 這樣")
-    #         continue
+#         # 點按鈕
+#         if user_input.startswith('>'):
+#             try:
+#                 idx = int(user_input[1:]) - 1
+#                 if 0 <= idx < len(line_bot_api.last_buttons):
+#                     btn = line_bot_api.last_buttons[idx]
+#                     print(f"   [點擊：{btn['label']}]")
+#                     if btn['type'] == 'message':
+#                         handle_message(user_id, btn['text'])
+#                     elif btn['type'] == 'postback':
+#                         handle_postback(user_id, btn['data'])
+#                 else:
+#                     print(f"   ⚠️  沒有編號 {idx+1} 的按鈕")
+#             except ValueError:
+#                 print("   ⚠️  格式錯誤，要打 >1 >2 這樣")
+#             continue
 
-    #     # 一般訊息
-    #     handle_message(user_id, user_input)
+#         # 一般訊息
+#         handle_message(user_id, user_input)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
