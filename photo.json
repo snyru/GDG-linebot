@@ -1,0 +1,38 @@
+{
+  "type": "bubble",
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "type": "text",
+        "text": "📷 請上傳物品的照片",
+        "weight": "bold",
+        "size": "lg"
+      },
+      {
+        "type": "text",
+        "text": "直接在聊天室傳送圖片即可。\n如果沒有照片，請點擊下方按鈕略過此步驟。",
+        "color": "#666666",
+        "size": "sm",
+        "wrap": true,
+        "margin": "md"
+      }
+    ]
+  },
+  "footer": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "type": "button",
+        "action": {
+          "type": "message",
+          "label": "略過拍照",
+          "text": "略過"
+        },
+        "style": "secondary"
+      }
+    ]
+  }
+}

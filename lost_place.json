@@ -1,0 +1,248 @@
+{
+  "type": "bubble",
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "type": "text",
+        "text": "在哪邊丟失的?(請選取最接近的地點)"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "台北大學正門",
+              "data": "action=set_location&loc=台北大學正門",
+              "displayText": "台北大學正門"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "台北大學側門",
+              "data": "action=set_location&loc=台北大學側門",
+              "displayText": "台北大學側門"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "停車場(後門)",
+              "data": "action=set_location&loc=停車場(後門)",
+              "displayText": "停車場(後門)"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "台北大學校外",
+              "data": "action=set_location&loc=台北大學校外",
+              "displayText": "台北大學校外"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "法學院",
+              "data": "action=set_location&loc=法學院",
+              "displayText": "法學院"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "公學院",
+              "data": "action=set_location&loc=公學院",
+              "displayText": "公學院"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "商學院",
+              "data": "action=set_location&loc=商學院",
+              "displayText": "商學院"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "文學院",
+              "data": "action=set_location&loc=文學院",
+              "displayText": "文學院"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "電資學院",
+              "data": "action=set_location&loc=電資學院",
+              "displayText": "電資學院"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "圖書館",
+              "data": "action=set_location&loc=圖書館",
+              "displayText": "圖書館"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "行政大樓",
+              "data": "action=set_location&loc=行政大樓",
+              "displayText": "行政大樓"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "社科院",
+              "data": "action=set_location&loc=社科院",
+              "displayText": "社科院"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "學生宿舍",
+              "data": "action=set_location&loc=學生宿舍",
+              "displayText": "學生宿舍"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "心湖會館",
+              "data": "helloaction=set_location&loc=心湖會館",
+              "displayText": "心湖會館"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "崇越館",
+              "data": "helloaction=set_location&loc=崇越館",
+              "displayText": "崇越館"
+            },
+            "style": "secondary"
+          },
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "體育館",
+              "data": "helloaction=set_location&loc=體育館",
+              "displayText": "體育館"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "postback",
+              "label": "其他",
+              "data": "helloaction=set_location&loc=其他",
+              "displayText": "其他"
+            },
+            "style": "secondary"
+          }
+        ],
+        "spacing": "sm"
+      }
+    ],
+    "position": "relative",
+    "spacing": "md"
+  }
+}
