@@ -255,21 +255,22 @@ def set_session(user_id, data):
 
 def clear_session(user_id):
     db.collection('sessions').document(user_id).delete()
-
-def get_photo_flex():
+    
+def get_location_flex(item_type):
+    filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, 'photo.json')
-
+    file_path = os.path.join(base_dir, filename) # 加上這兩行防呆
     with open(file_path, 'r', encoding='utf-8') as f:
         contents = json.load(f)
-    return FlexSendMessage(alt_text="請上傳照片", contents=contents)
+    return FlexSendMessage(alt_text="請選擇地點", contents=contents)
 
 def get_location_flex(item_type):
+    # 根據是遺失還是撿到，讀取對應的檔案
     filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
     with open(filename, 'r', encoding='utf-8') as f:
         contents = json.load(f)
     return FlexSendMessage(alt_text="請選擇地點", contents=contents)
-
+    
 def get_main_menu():
     flex_content = {
         "type": "bubble",
@@ -530,7 +531,6 @@ def handle_message(user_id, text):
         line_bot_api.reply_message(None, [TextSendMessage(text=summary), get_main_menu()])
     else:
         line_bot_api.reply_message(None, [TextSendMessage(text="請使用下方選單操作 👇"), get_main_menu()])
-
 def handle_postback(user_id, data):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
