@@ -261,7 +261,7 @@ def clear_session(user_id):
 def get_location_flex(item_type):
     filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, filename) # 加上這兩行防呆
+    file_path = os.path.join(base_dir, filename)
     with open(file_path, 'r', encoding='utf-8') as f:
         contents = json.load(f)
     return FlexSendMessage(alt_text="請選擇地點", contents=contents)
