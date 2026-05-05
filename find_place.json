@@ -189,7 +189,7 @@
             "action": {
               "type": "postback",
               "label": "心湖會館",
-              "data": "helloaction=set_location&loc=心湖會館",
+              "data": "action=set_location&loc=心湖會館",
               "displayText": "心湖會館"
             },
             "style": "secondary"
@@ -206,7 +206,7 @@
             "action": {
               "type": "postback",
               "label": "崇越館",
-              "data": "helloaction=set_location&loc=崇越館",
+              "data": "action=set_location&loc=崇越館",
               "displayText": "崇越館"
             },
             "style": "secondary"
@@ -216,7 +216,7 @@
             "action": {
               "type": "postback",
               "label": "體育館",
-              "data": "helloaction=set_location&loc=體育館",
+              "data": "action=set_location&loc=體育館",
               "displayText": "體育館"
             },
             "style": "secondary"
@@ -233,7 +233,7 @@
             "action": {
               "type": "postback",
               "label": "其他",
-              "data": "helloaction=set_location&loc=其他",
+              "data": "action=set_location&loc=其他",
               "displayText": "其他"
             },
             "style": "secondary"
