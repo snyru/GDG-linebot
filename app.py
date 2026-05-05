@@ -238,11 +238,7 @@ firestore = FakeFirestore()
 
 # ============ 以下是從 app.py 抽出來的核心邏輯（去掉 LINE/Firebase 依賴）============
 CATEGORIES = {
-    "1": "電子產品",
-    "2": "衣物配件",
-    "3": "證件錢包",
-    "4": "鑰匙",
-    "5": "其他"
+    "電子產品", "衣服", "鞋子", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"
 }
 
 
@@ -294,6 +290,42 @@ def get_main_menu():
     }
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
+def get_category_menu():
+    flex_content = {
+        "type": "bubble",
+        "size": "mega",
+        "body": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "我撿到的種類", "weight": "bold", "size": "xl", "align": "center", "margin": "md"},
+                {"type": "text", "text": "請選擇你的狀況", "size": "md", "color": "#888888", "align": "center", "margin": "md"},
+                {"type": "box", "layout": "vertical", "spacing": "md", "margin": "xl",
+                 "contents": [
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "電子產品", "text": "電子產品"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "衣服", "text": "衣服"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "鞋子", "text": "鞋子"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "證件", "text": "證件"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "錢包", "text": "錢包"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "雨傘", "text": "雨傘"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "書籍", "text": "書籍"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "其他", "text": "其他"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal",
+                      "contents": [
+                          {"type": "button", "style": "secondary", "action": {"type": "message", "label": "配飾 (耳環、項鍊、手鏈)", "text": "配飾"}}
+                      ]}
+                 ]}
+            ]
+        }
+    }
+    return FlexSendMessage(alt_text="請選擇撿到的種類", contents=flex_content)
 
 def save_item(user_id, session):
     _, doc = db.collection('items').add({
@@ -458,12 +490,10 @@ def handle_message(user_id, text):
 
     if text == "我撿到東西了":
         set_session(user_id, {"type": "found", "step": "wait_category"})
-        line_bot_api.reply_message(None, TextSendMessage(
-            text="好的！請問撿到的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他"))
+        line_bot_api.reply_message(None, get_category_menu())
     elif text == "我在找東西":
         set_session(user_id, {"type": "lost", "step": "wait_category"})
-        line_bot_api.reply_message(None, TextSendMessage(
-            text="沒關係！請問遺失的是哪類物品？\n\n請回覆數字：\n1. 電子產品\n2. 衣物配件\n3. 證件錢包\n4. 鑰匙\n5. 其他"))
+        line_bot_api.reply_message(None, get_category_menu())
     elif text == "我找到了":
         items = get_open_items_for_found()
         if not items:
@@ -486,11 +516,11 @@ def handle_message(user_id, text):
         line_bot_api.reply_message(None, TextSendMessage(text=reply))
     elif step == "wait_category":
         if text in CATEGORIES:
-            session["category"] = CATEGORIES[text]
+            session["category"] = text
             session["step"] = "wait_description"
             set_session(user_id, session)
             line_bot_api.reply_message(None, TextSendMessage(
-                text=f"分類：{CATEGORIES[text]} ✅\n\n請描述一下這個物品的外觀特徵（顏色、品牌、特殊記號等）"))
+                text=f"分類：{text} ✅\n\n請描述一下這個物品的外觀特徵（顏色、品牌、特殊記號等）"))
         else:
             line_bot_api.reply_message(None, TextSendMessage(text="請回覆 1~5 的數字選擇分類 😊"))
     elif step == "wait_description":
