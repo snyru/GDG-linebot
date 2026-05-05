@@ -1,4 +1,6 @@
 import uuid
+import os
+import json
 from urllib.parse import parse_qs
 
 
@@ -265,11 +267,19 @@ def get_location_flex(item_type):
     return FlexSendMessage(alt_text="請選擇地點", contents=contents)
 
 def get_location_flex(item_type):
-    # 根據是遺失還是撿到，讀取對應的檔案
     filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
-    with open(filename, 'r', encoding='utf-8') as f:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, filename)
+    with open(file_path, 'r', encoding='utf-8') as f:
         contents = json.load(f)
     return FlexSendMessage(alt_text="請選擇地點", contents=contents)
+
+def get_photo_flex():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, 'photo.json')
+    with open(file_path, 'r', encoding='utf-8') as f:
+        contents = json.load(f)
+    return FlexSendMessage(alt_text="請上傳照片或略過", contents=contents)
     
 def get_main_menu():
     flex_content = {
