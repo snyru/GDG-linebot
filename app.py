@@ -235,7 +235,7 @@ def handle_message_logic(user_id, text, reply_token):
         set_session(user_id, {"type": "found", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我撿到的種類"))
     elif text == "我在找東西":
-        set_session(user_id, {"type": "lost", "step": "wait_category"})
+        set_session(user_id, {"type": "lost", "step": "wait_description"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
     
     elif text in CATEGORIES and step == "wait_category":
