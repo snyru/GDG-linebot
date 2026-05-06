@@ -150,20 +150,41 @@ def get_main_menu():
 
 # 這裡修正了原本只有一段文字的分類選單，讓它更完整
 def get_category_menu():
-    # 這裡可以根據需要讀取外部 json 或直接寫在 code 裡
-    # 為簡化範例，先使用固定內容
     flex_content = {
         "type": "bubble",
+        "size": "mega",
         "body": {
-            "type": "box", "layout": "vertical", "contents": [
-                {"type": "text", "text": "請選擇分類", "weight": "bold", "size": "lg"},
-                {"type": "button", "style": "link", "action": {"type": "message", "label": "電子產品", "text": "電子產品"}},
-                {"type": "button", "style": "link", "action": {"type": "message", "label": "證件", "text": "證件"}},
-                {"type": "button", "style": "link", "action": {"type": "message", "label": "其他", "text": "其他"}}
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "我撿到的種類", "weight": "bold", "size": "xl", "align": "center", "margin": "md"},
+                {"type": "text", "text": "請選擇你的狀況", "size": "md", "color": "#888888", "align": "center", "margin": "md"},
+                {"type": "box", "layout": "vertical", "spacing": "md", "margin": "xl",
+                 "contents": [
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "電子產品", "text": "電子產品"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "衣服", "text": "衣服"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "鞋子", "text": "鞋子"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "證件", "text": "證件"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "錢包", "text": "錢包"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "雨傘", "text": "雨傘"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "書籍", "text": "書籍"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "其他", "text": "其他"}}
+                     ]},
+                     {"type": "box", "layout": "horizontal",
+                      "contents": [
+                          {"type": "button", "style": "secondary", "action": {"type": "message", "label": "配飾 (耳環、項鍊、手鏈)", "text": "配飾"}}
+                      ]}
+                 ]}
             ]
         }
     }
-    return FlexSendMessage(alt_text="請選擇種類", contents=flex_content)
+    return FlexSendMessage(alt_text="請選擇撿到的種類", contents=flex_content)
 
 # ============ 4. 訊息與事件處理邏輯 ============
 def handle_message_logic(user_id, text, reply_token):
