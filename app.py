@@ -232,14 +232,56 @@ def handle_message_logic(user_id, text, reply_token):
     elif step == "wait_location_button":
         # 避免使用者在等待按鈕時輸入文字
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方的按鈕選擇地點喔！"))
+        
+    elif step == "wait_detailed_location":
+        # 1. 儲存使用者輸入的詳細地點
+        detailed_location = text
+        main_location = session.get("location", "未知地點")
+        
+        # 2. 準備存入資料庫的完整資料 (這裡示範整合目前的資料)
+        final_data = {
+            "userId": user_id,
+            "type": session.get("type"),
+            "category": session.get("category"),
+            "description": session.get("description"),
+            "location": main_location,
+            "detailed_location": detailed_location,
+            "status": "open"
+        }
+        
+        # [未來擴充] 可以在這裡呼叫 db.collection('items').add(final_data) 存進資料庫
+        
+        # 3. 清除 Session，結束這回合的對話
+        clear_session(user_id)
+        
+        # 4. 回傳確認訊息給使用者，讓他們知道登記成功了
+        summary = (
+            f"✅ 登記成功！\n"
+            f"📌 分類：{final_data['category']}\n"
+            f"📝 描述：{final_data['description']}\n"
+            f"📍 地點：{final_data['location']} ({final_data['detailed_location']})"
+        )
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=summary))
 
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
-    # 這裡實作按鈕點擊後的邏輯
+    
+    # 記得抓取使用者的 session
+    session = get_session(user_id)
+    
     if action == "set_location":
         loc = params.get('loc', [''])[0]
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"地點已設定在：{loc}"))
+        
+        # 1. 儲存大略地點
+        session["location"] = loc
+        # 2. 將狀態推進到「等待詳細地點」
+        session["step"] = "wait_detailed_location"
+        set_session(user_id, session)
+        
+        # 3. 提示使用者輸入文字
+        reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
 
 # ============ 5. Flask Webhook 入口 ============
 @app.route("/", methods=['GET'])
