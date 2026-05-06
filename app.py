@@ -105,7 +105,6 @@ def get_main_menu():
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
 def get_category_menu(title="我撿到的種類"):
-    # (與原本相同，省略過長版面，但程式碼中保持完整)
     flex_content = {
         "type": "bubble",
         "size": "mega",
@@ -142,7 +141,7 @@ def get_category_menu(title="我撿到的種類"):
     }
     return FlexSendMessage(alt_text=f"請選擇{title}", contents=flex_content)
 
-# [新增] 製作可左右滑動的失物卡片 (Carousel)
+# [新增] 製作可左右滑動的失物卡片 (Carousel) + 加上認領按鈕
 def generate_carousel_flex(items_list, alt_text="失物列表"):
     bubbles = []
     for item in items_list:
@@ -167,9 +166,29 @@ def generate_carousel_flex(items_list, alt_text="失物列表"):
                 "aspectRatio": "4:3",
                 "aspectMode": "cover"
             }
+        
+        # [重點新增] 如果有抓到文件 ID，就加上下方的「這是我的！」按鈕
+        if "doc_id" in item:
+            bubble["footer"] = {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#FF6B6E",
+                        "action": {
+                            "type": "postback",
+                            "label": "✋ 這是我的！",
+                            "data": f"action=claim_item&item_id={item['doc_id']}",
+                            "displayText": "我想領回這個物品"
+                        }
+                    }
+                ]
+            }
         bubbles.append(bubble)
 
-    # 如果完全沒有泡泡（避免報錯）
     if not bubbles:
         return TextSendMessage(text="目前沒有找到符合的物品喔！")
 
@@ -190,12 +209,15 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_main_menu())
         return
 
-    # [新增功能] 查看所有失物 (直接列出待領取的 'found' 物品)
+    # 查看所有失物 (抓取包含 doc.id 的資料)
     if text == "查看所有失物":
         try:
-            # 尋找 type 是 found 且 status 是 open 的前 10 筆資料
             docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(10).stream()
-            items_list = [doc.to_dict() for doc in docs]
+            items_list = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['doc_id'] = doc.id # [重點] 把資料庫 ID 塞進去給卡片用
+                items_list.append(data)
             
             if not items_list:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有待領取的失物喔！"))
@@ -244,7 +266,6 @@ def handle_message_logic(user_id, text, reply_token):
         item_type = session.get("type")
         category = session.get("category")
         
-        # 準備存入 Firestore
         final_data = {
             "userId": user_id,
             "type": item_type,
@@ -264,7 +285,6 @@ def handle_message_logic(user_id, text, reply_token):
             
         clear_session(user_id)
         
-        # 1. 傳送登記成功的訊息
         summary = (
             f"✅ 登記成功！\n"
             f"📌 分類：{final_data['category']}\n"
@@ -273,9 +293,8 @@ def handle_message_logic(user_id, text, reply_token):
         )
         messages_to_send = [TextSendMessage(text=summary)]
 
-        # 2. [新增功能] 立即自動配對邏輯
+        # 自動配對 (同樣抓取 doc.id)
         try:
-            # 如果我遺失東西，我就去資料庫找「被撿到(found)」且「相同分類」的東西；反之亦然。
             target_type = "found" if item_type == "lost" else "lost"
             match_docs = db.collection('items')\
                 .where('type', '==', target_type)\
@@ -283,7 +302,11 @@ def handle_message_logic(user_id, text, reply_token):
                 .where('status', '==', 'open')\
                 .limit(5).stream()
             
-            matches = [doc.to_dict() for doc in match_docs]
+            matches = []
+            for doc in match_docs:
+                d = doc.to_dict()
+                d['doc_id'] = doc.id
+                matches.append(d)
             
             if matches:
                 messages_to_send.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果，看看有沒有相符的："))
@@ -294,9 +317,9 @@ def handle_message_logic(user_id, text, reply_token):
         except Exception as e:
             print(f"配對查詢失敗: {e}")
 
-        # 將登記成功 + 配對結果 一次推播給使用者
         line_bot_api.reply_message(reply_token, messages_to_send)
 
+# [新增] 處理按鈕的邏輯
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
@@ -310,6 +333,17 @@ def handle_postback_logic(user_id, data, reply_token):
         
         reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
+        
+    elif action == "claim_item":
+        # [重點] 收到領回請求，將該物品標記為已結案 (closed)
+        item_id = params.get('item_id', [''])[0]
+        try:
+            db.collection('items').document(item_id).update({'status': 'closed'})
+            reply_msg = "🎉 太好了！已將此物品標記為「已尋回」，它不會再顯示於列表中囉。\n\n⚠️ 請依循校方或相關單位的規定前往領取/確認喔！"
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
+        except Exception as e:
+            print(f"標記狀態失敗: {e}")
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="Oops, 標記失敗，請稍後再試。"))
 
 def handle_image_message_logic(user_id, message_id, reply_token):
     session = get_session(user_id)
