@@ -180,7 +180,7 @@ def generate_carousel_flex(items_list, alt_text="失物列表"):
                         "color": "#FF6B6E",
                         "action": {
                             "type": "postback",
-                            "label": "✋ 這是我的！",
+                            "label": "✋ 這是我的！（點選登記領回）",
                             "data": f"action=claim_item&item_id={item['doc_id']}",
                             "displayText": "我想領回這個物品"
                         }
