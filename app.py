@@ -12,22 +12,17 @@ from linebot.models import (
     FlexSendMessage, PostbackEvent, ImageMessage
 )
 
-# 引入 Firebase
 import firebase_admin
 from firebase_admin import credentials, firestore
-
-# 引入 Cloudinary
 import cloudinary
 import cloudinary.uploader
 
 # ============ 1. 伺服器與第三方服務初始化 ============
 app = Flask(__name__)
 
-# LINE Bot 初始化
 line_bot_api = LineBotApi(os.getenv('LINE_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_SECRET'))
 
-# Firebase 初始化
 firebase_cert = os.getenv("FIREBASE_CREDENTIALS")
 if firebase_cert:
     try:
@@ -41,7 +36,6 @@ if firebase_cert:
 else:
     print("尚未設定 FIREBASE_CREDENTIALS 環境變數！")
 
-# Cloudinary 初始化
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -58,34 +52,26 @@ def get_session(user_id):
         doc = doc_ref.get()
         return doc.to_dict() if doc.exists else {}
     except Exception as e:
-        print(f"讀取 Session 失敗: {e}")
         return {}
 
 def set_session(user_id, data):
     try:
         db.collection('sessions').document(user_id).set(data, merge=True)
     except Exception as e:
-        print(f"寫入 Session 失敗: {e}")
+        pass
 
 def clear_session(user_id):
     try:
         db.collection('sessions').document(user_id).delete()
     except Exception as e:
-        print(f"清除 Session 失敗: {e}")
+        pass
 
 # ============ 3. Flex Message 生成 ============
-def get_location_flex(item_type):
-    filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
+def get_flex_message(filename, alt_text):
     file_path = os.path.join(os.path.dirname(__file__), filename)
     with open(file_path, 'r', encoding='utf-8') as f:
         contents = json.load(f)
-    return FlexSendMessage(alt_text="請選擇地點", contents=contents)
-
-def get_photo_flex():
-    file_path = os.path.join(os.path.dirname(__file__), 'photo.json')
-    with open(file_path, 'r', encoding='utf-8') as f:
-        contents = json.load(f)
-    return FlexSendMessage(alt_text="請上傳照片或略過", contents=contents)
+    return FlexSendMessage(alt_text=alt_text, contents=contents)
 
 def get_main_menu():
     flex_content = {
@@ -141,7 +127,6 @@ def get_category_menu(title="我撿到的種類"):
     }
     return FlexSendMessage(alt_text=f"請選擇{title}", contents=flex_content)
 
-# [重點修改] 加上 show_claim_button 參數，預設為 True，但可以設定為 False 隱藏按鈕
 def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_button=True):
     bubbles = []
     for item in items_list:
@@ -153,10 +138,17 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
                 "contents": [
                     {"type": "text", "text": item.get('category', '未知分類'), "weight": "bold", "size": "xl", "color": "#1DB446"},
                     {"type": "text", "text": f"特徵：{item.get('description', '無')}", "wrap": True, "margin": "md", "size": "sm"},
-                    {"type": "text", "text": f"地點：{item.get('location', '')} {item.get('detailed_location', '')}", "wrap": True, "size": "xs", "color": "#aaaaaa"}
+                    {"type": "text", "text": f"掉落點：{item.get('location', '')} {item.get('detailed_location', '')}", "wrap": True, "size": "xs", "color": "#aaaaaa"}
                 ]
             }
         }
+        
+        # [新增] 顯示放置地點（如果有）
+        if item.get("dropoff"):
+            bubble["body"]["contents"].append(
+                {"type": "text", "text": f"📍 目前放置於：{item['dropoff']}", "wrap": True, "size": "sm", "color": "#FF3366", "weight": "bold", "margin": "md"}
+            )
+            
         if item.get("photo_url"):
             bubble["hero"] = {
                 "type": "image",
@@ -166,7 +158,6 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
                 "aspectMode": "cover"
             }
         
-        # 只有在 show_claim_button 為 True 且有 doc_id 時才顯示按鈕
         if show_claim_button and "doc_id" in item:
             bubble["footer"] = {
                 "type": "box",
@@ -197,6 +188,26 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
     }
     return FlexSendMessage(alt_text=alt_text, contents=carousel)
 
+# 寫入資料庫的共用函式
+def save_item_to_db(user_id, session):
+    final_data = {
+        "userId": user_id,
+        "type": session.get("type"),
+        "category": session.get("category"),
+        "description": session.get("description"),
+        "location": session.get("location", "未知"),
+        "detailed_location": session.get("detailed_location", ""),
+        "dropoff": session.get("dropoff", ""), # 新增放置地點
+        "photo_url": session.get("photo_url", ""),
+        "status": "open",
+        "timestamp": firestore.SERVER_TIMESTAMP
+    }
+    try:
+        db.collection('items').add(final_data)
+    except Exception as e:
+        print(f"寫入 items 失敗: {e}")
+    return final_data
+
 # ============ 4. 訊息與事件處理邏輯 ============
 def handle_message_logic(user_id, text, reply_token):
     text = text.strip()
@@ -208,23 +219,16 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_main_menu())
         return
 
-    # [重點修改] 查看所有失物時，傳入 show_claim_button=False，這樣按鈕就不會出現了！
     if text == "查看所有失物":
         try:
             docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(10).stream()
-            items_list = []
-            for doc in docs:
-                data = doc.to_dict()
-                data['doc_id'] = doc.id
-                items_list.append(data)
-            
+            items_list = [{"doc_id": doc.id, **doc.to_dict()} for doc in docs]
             if not items_list:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有待領取的失物喔！"))
             else:
-                line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "這是最近撿到的物品列表", show_claim_button=False))
-        except Exception as e:
-            print(f"讀取列表失敗: {e}")
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取資料失敗，請稍後再試。"))
+                line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "失物列表", show_claim_button=False))
+        except Exception:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取失敗，請稍後再試。"))
         return
 
     if text == "我撿到東西了":
@@ -233,91 +237,95 @@ def handle_message_logic(user_id, text, reply_token):
     elif text == "我在找東西":
         set_session(user_id, {"type": "lost", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
+    
     elif text in CATEGORIES and step == "wait_category":
         session["category"] = text
         session["step"] = "wait_description"
         set_session(user_id, session)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+    
     elif step == "wait_description":
         session["description"] = text
-        
         if session.get("type") == "found":
             session["step"] = "wait_photo"
             set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_photo_flex())
+            line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳照片或略過'))
         else:
             session["step"] = "wait_location_button"
             set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_location_flex("lost"))
+            line_bot_api.reply_message(reply_token, get_flex_message('lost_place.json', '請選擇地點'))
 
     elif step == "wait_photo" and text == "略過":
         session["step"] = "wait_location_button"
         set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, get_location_flex("found"))
+        line_bot_api.reply_message(reply_token, get_flex_message('find_place.json', '請選擇地點'))
         
     elif step == "wait_location_button":
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方的按鈕選擇地點喔！"))
         
     elif step == "wait_detailed_location":
-        detailed_location = text
-        main_location = session.get("location", "未知地點")
-        photo_url = session.get("photo_url", "")
+        session["detailed_location"] = text
         item_type = session.get("type")
-        category = session.get("category")
         
-        final_data = {
-            "userId": user_id,
-            "type": item_type,
-            "category": category,
-            "description": session.get("description"),
-            "location": main_location,
-            "detailed_location": detailed_location,
-            "photo_url": photo_url,
-            "status": "open",
-            "timestamp": firestore.SERVER_TIMESTAMP
-        }
-        
-        try:
-            db.collection('items').add(final_data)
-        except Exception as e:
-            print(f"寫入 items 失敗: {e}")
-            
-        clear_session(user_id)
-        
-        summary = (
-            f"✅ 登記成功！\n"
-            f"📌 分類：{final_data['category']}\n"
-            f"📝 描述：{final_data['description']}\n"
-            f"📍 地點：{final_data['location']} ({final_data['detailed_location']})"
-        )
-        messages_to_send = [TextSendMessage(text=summary)]
-
+        # [修改] 如果是「找東西」，就直接結案並配對
         if item_type == "lost":
+            final_data = save_item_to_db(user_id, session)
+            clear_session(user_id)
+            
+            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📝 描述：{final_data['description']}\n📍 地點：{final_data['location']} ({final_data['detailed_location']})")]
+            
             try:
-                target_type = "found"
-                match_docs = db.collection('items')\
-                    .where('type', '==', target_type)\
-                    .where('category', '==', category)\
-                    .where('status', '==', 'open')\
-                    .limit(5).stream()
-                
-                matches = []
-                for doc in match_docs:
-                    d = doc.to_dict()
-                    d['doc_id'] = doc.id
-                    matches.append(d)
+                match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
+                matches = [{"doc_id": doc.id, **doc.to_dict()} for doc in match_docs]
                 
                 if matches:
-                    messages_to_send.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果，看看有沒有您的失物："))
-                    # 這裡沒有加上 show_claim_button=False，所以預設為 True，會顯示領回按鈕！
-                    messages_to_send.append(generate_carousel_flex(matches, "系統配推結果"))
+                    messages.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果："))
+                    messages.append(generate_carousel_flex(matches, "系統配對結果"))
                 else:
-                    messages_to_send.append(TextSendMessage(text="系統目前尚未配對到符合的物品，若之後有人登記，再請隨時來查看喔！"))
-                    
-            except Exception as e:
-                print(f"配對查詢失敗: {e}")
+                    # [新增] 沒配對到時，推播官方聯絡據點！
+                    messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
+                    messages.append(get_flex_message('contact_places.json', '聯絡據點'))
+            except Exception:
+                pass
+            line_bot_api.reply_message(reply_token, messages)
+            
+        # [修改] 如果是「撿到東西」，進入詢問「放置地點」流程
+        else:
+            session["step"] = "wait_dropoff_options"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_flex_message('dropoff.json', '預計送去哪個地點？'))
 
-        line_bot_api.reply_message(reply_token, messages_to_send)
+    # [新增] 處理放置地點的選擇
+    elif step == "wait_dropoff_options":
+        if text == "其他":
+            session["step"] = "wait_custom_dropoff"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入您預計放置的詳細地點："))
+        else:
+            session["dropoff"] = text
+            final_data = save_item_to_db(user_id, session)
+            clear_session(user_id)
+            
+            # 結案，並推播官方建議據點卡片感謝他
+            messages = [
+                TextSendMessage(text=f"✅ 登記成功！感謝您的熱心！\n📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
+                TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
+                get_flex_message('contact_places.json', '聯絡據點')
+            ]
+            line_bot_api.reply_message(reply_token, messages)
+
+    # [新增] 處理手動輸入的放置地點
+    elif step == "wait_custom_dropoff":
+        session["dropoff"] = text
+        final_data = save_item_to_db(user_id, session)
+        clear_session(user_id)
+        
+        messages = [
+            TextSendMessage(text=f"✅ 登記成功！感謝您的熱心！\n📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
+            TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
+            get_flex_message('contact_places.json', '聯絡據點')
+        ]
+        line_bot_api.reply_message(reply_token, messages)
 
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
@@ -329,56 +337,41 @@ def handle_postback_logic(user_id, data, reply_token):
         session["location"] = loc
         session["step"] = "wait_detailed_location"
         set_session(user_id, session)
-        
-        reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："))
         
     elif action == "claim_item":
         item_id = params.get('item_id', [''])[0]
         try:
             db.collection('items').document(item_id).update({'status': 'closed'})
-            reply_msg = "🎉 太好了！已將此物品標記為「已尋回」，它不會再顯示於列表中囉。\n\n⚠️ 請依循校方或相關單位的規定前往領取/確認喔！"
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
-        except Exception as e:
-            print(f"標記狀態失敗: {e}")
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="🎉 太好了！已將此物品標記為「已尋回」，它不會再顯示於列表中囉。\n\n⚠️ 請依循校方或相關單位的規定前往領取/確認喔！"))
+        except Exception:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="Oops, 標記失敗，請稍後再試。"))
 
 def handle_image_message_logic(user_id, message_id, reply_token):
     session = get_session(user_id)
-    step = session.get("step")
-    
-    if step == "wait_photo":
+    if session.get("step") == "wait_photo":
         line_bot_api.reply_message(reply_token, TextSendMessage(text="照片上傳中，請稍候..."))
         try:
-            message_content = line_bot_api.get_message_content(message_id)
-            image_io = io.BytesIO(b''.join(message_content.iter_content()))
-            
-            upload_result = cloudinary.uploader.upload(image_io)
-            image_url = upload_result.get("secure_url")
-            
+            content = line_bot_api.get_message_content(message_id)
+            image_url = cloudinary.uploader.upload(io.BytesIO(b''.join(content.iter_content()))).get("secure_url")
             session["photo_url"] = image_url
             session["step"] = "wait_location_button"
             set_session(user_id, session)
-            
-            line_bot_api.push_message(user_id, get_location_flex("found"))
-        except Exception as e:
-            print(f"圖片上傳失敗: {e}")
+            line_bot_api.push_message(user_id, get_flex_message('find_place.json', '請選擇地點'))
+        except Exception:
             line_bot_api.push_message(user_id, TextSendMessage(text="照片上傳失敗，請稍後再試。"))
     else:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前不需要傳送照片喔，請根據指示操作！"))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前不需要傳送照片喔！"))
 
 # ============ 5. Flask Webhook 入口 ============
 @app.route("/", methods=['GET'])
 def index():
-    return "NTPU Lost and Found Bot is running!"
+    return "Bot is running!"
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
-
     try:
-        handler.handle(body, signature)
+        handler.handle(request.get_data(as_text=True), request.headers['X-Line-Signature'])
     except InvalidSignatureError:
         abort(400)
     return 'OK'
@@ -396,5 +389,4 @@ def handle_image(event):
     handle_image_message_logic(event.source.user_id, event.message.id, event.reply_token)
 
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
