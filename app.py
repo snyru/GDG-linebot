@@ -4,9 +4,20 @@ import json
 from flask import Flask, request, abort
 from urllib.parse import parse_qs
 
-# ============ 1. 伺服器初始化 ============
-# 這裡建立名為 'app' 的變數，讓 Render 的 Gunicorn 能夠找到它
+# 引入官方 SDK
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, 
+    FlexSendMessage, PostbackEvent
+)
+
+# ============ 1. 伺服器與 LINE SDK 初始化 ============
 app = Flask(__name__)
+
+# 從環境變數讀取金鑰 (請確保 Render 設定中已有這兩個變數)
+line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
+handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 
 # ============ 2. 假資料庫類別 (FakeDB) ============
 class FakeDB:
@@ -82,7 +93,6 @@ class FakeSnapshot:
     def to_dict(self):
         return self._data
 
-# 初始化資料庫實例
 db = FakeDB()
 
 def seed_data():
@@ -95,25 +105,7 @@ def seed_data():
 
 seed_data()
 
-# ============ 3. LINE 訊息類別與實體 ============
-class TextSendMessage:
-    def __init__(self, text):
-        self.text = text
-
-class FlexSendMessage:
-    def __init__(self, alt_text, contents):
-        self.alt_text = alt_text
-        self.contents = contents
-
-class LineBotApi:
-    """這裡您之後可以替換為真正的 linebot.models"""
-    def reply_message(self, reply_token, messages):
-        # 在 Render 日誌中印出回覆內容以便除錯
-        print(f">>> Reply to {reply_token}: Sending messages...")
-
-line_bot_api = LineBotApi()
-
-# ============ 4. 業務邏輯函式 ============
+# ============ 3. 業務邏輯函式 ============
 CATEGORIES = {"電子產品", "衣服", "鞋子", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
 
 def get_session(user_id):
@@ -140,31 +132,46 @@ def get_photo_flex():
     return FlexSendMessage(alt_text="請上傳照片或略過", contents=contents)
 
 def get_main_menu():
-    # ... (保留您原本的 get_main_menu 內容)
     flex_content = {
         "type": "bubble",
         "body": {
             "type": "box", "layout": "vertical", "spacing": "md",
             "contents": [
                 {"type": "text", "text": "🔍 失物招領", "weight": "bold", "size": "xl", "align": "center"},
+                {"type": "text", "text": "請選擇你的狀況", "size": "sm", "color": "#888888", "align": "center"},
                 {"type": "button", "style": "primary", "color": "#4CAF50", "action": {"type": "message", "label": "📦 我撿到東西了", "text": "我撿到東西了"}},
                 {"type": "button", "style": "primary", "color": "#2196F3", "action": {"type": "message", "label": "🔎 我在找東西", "text": "我在找東西"}},
+                {"type": "button", "style": "primary", "color": "#FF9800", "action": {"type": "message", "label": "✅ 我找到了", "text": "我找到了"}},
+                {"type": "button", "style": "secondary", "action": {"type": "message", "label": "📋 查看所有失物", "text": "查看所有失物"}},
             ]
         }
     }
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
+# 這裡修正了原本只有一段文字的分類選單，讓它更完整
 def get_category_menu():
-    # ... (保留您原本的 get_category_menu 內容)
-    return FlexSendMessage(alt_text="請選擇種類", contents={"type": "bubble", "body": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": "請選擇分類"}]}})
+    # 這裡可以根據需要讀取外部 json 或直接寫在 code 裡
+    # 為簡化範例，先使用固定內容
+    flex_content = {
+        "type": "bubble",
+        "body": {
+            "type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": "請選擇分類", "weight": "bold", "size": "lg"},
+                {"type": "button", "style": "link", "action": {"type": "message", "label": "電子產品", "text": "電子產品"}},
+                {"type": "button", "style": "link", "action": {"type": "message", "label": "證件", "text": "證件"}},
+                {"type": "button", "style": "link", "action": {"type": "message", "label": "其他", "text": "其他"}}
+            ]
+        }
+    }
+    return FlexSendMessage(alt_text="請選擇種類", contents=flex_content)
 
-# ============ 5. 訊息處理邏輯 ============
-def handle_message(user_id, text, reply_token):
+# ============ 4. 訊息與事件處理邏輯 ============
+def handle_message_logic(user_id, text, reply_token):
     text = text.strip()
     session = get_session(user_id)
     step = session.get("step")
 
-    if text in ["選單", "開始", "取消"]:
+    if text in ["選單", "開始", "取消", "menu"]:
         clear_session(user_id)
         line_bot_api.reply_message(reply_token, get_main_menu())
         return
@@ -172,36 +179,49 @@ def handle_message(user_id, text, reply_token):
     if text == "我撿到東西了":
         set_session(user_id, {"type": "found", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu())
-    # ... 這裡繼續放入您原本 handle_message 的其他 elif 邏輯 ...
+    elif text == "我在找東西":
+        set_session(user_id, {"type": "lost", "step": "wait_category"})
+        line_bot_api.reply_message(reply_token, get_category_menu())
+    elif text in CATEGORIES and step == "wait_category":
+        session["category"] = text
+        session["step"] = "wait_description"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+    # ... 其餘 logic 可以在此延伸
 
-def handle_postback(user_id, data, reply_token):
+def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
-    session = get_session(user_id)
-    # ... 這裡放入您原本 handle_postback 的邏輯 ...
+    # 這裡實作按鈕點擊後的邏輯
+    if action == "set_location":
+        loc = params.get('loc', [''])[0]
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"地點已設定在：{loc}"))
 
-# ============ 6. Flask Webhook 入口 ============
+# ============ 5. Flask Webhook 入口 ============
 @app.route("/", methods=['GET'])
 def index():
     return "NTPU Lost and Found Bot is running!"
 
 @app.route("/callback", methods=['POST'])
 def callback():
+    signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    payload = json.loads(body)
 
-    for event in payload.get('events', []):
-        reply_token = event.get('replyToken')
-        user_id = event['source']['userId']
-
-        if event['type'] == 'message' and event['message']['type'] == 'text':
-            handle_message(user_id, event['message']['text'], reply_token)
-        elif event['type'] == 'postback':
-            handle_postback(user_id, event['postback']['data'], reply_token)
-
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
     return 'OK'
 
+# 官方 SDK 事件處理器
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    handle_message_logic(event.source.user_id, event.message.text, event.reply_token)
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    handle_postback_logic(event.source.user_id, event.postback.data, event.reply_token)
+
 if __name__ == "__main__":
-    # 這裡本地測試用，Render 會透過 Gunicorn 執行
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
