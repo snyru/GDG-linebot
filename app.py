@@ -143,7 +143,6 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
             }
         }
         
-        # [新增] 顯示放置地點（如果有）
         if item.get("dropoff"):
             bubble["body"]["contents"].append(
                 {"type": "text", "text": f"📍 目前放置於：{item['dropoff']}", "wrap": True, "size": "sm", "color": "#FF3366", "weight": "bold", "margin": "md"}
@@ -188,16 +187,16 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
     }
     return FlexSendMessage(alt_text=alt_text, contents=carousel)
 
-# 寫入資料庫的共用函式
+# 寫入資料庫的共用函式 (確保如果有沒填到的資料，會補上空字串而不是 None)
 def save_item_to_db(user_id, session):
     final_data = {
         "userId": user_id,
         "type": session.get("type"),
-        "category": session.get("category"),
-        "description": session.get("description"),
+        "category": session.get("category", "未知分類"),
+        "description": session.get("description", "無"),
         "location": session.get("location", "未知"),
         "detailed_location": session.get("detailed_location", ""),
-        "dropoff": session.get("dropoff", ""), # 新增放置地點
+        "dropoff": session.get("dropoff", ""),
         "photo_url": session.get("photo_url", ""),
         "status": "open",
         "timestamp": firestore.SERVER_TIMESTAMP
@@ -214,6 +213,7 @@ def handle_message_logic(user_id, text, reply_token):
     session = get_session(user_id)
     step = session.get("step")
 
+    # 1. 處理主選單與強制重置
     if text in ["選單", "開始", "取消", "menu"]:
         clear_session(user_id)
         line_bot_api.reply_message(reply_token, get_main_menu())
@@ -231,19 +231,29 @@ def handle_message_logic(user_id, text, reply_token):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取失敗，請稍後再試。"))
         return
 
+    # [防呆重點] 開始新流程時，強制清除舊的記憶，避免交錯！
     if text == "我撿到東西了":
+        clear_session(user_id) # 強制清空舊記憶
         set_session(user_id, {"type": "found", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我撿到的種類"))
+        return
+        
     elif text == "我在找東西":
-        set_session(user_id, {"type": "lost", "step": "wait_description"})
+        clear_session(user_id) # 強制清空舊記憶
+        set_session(user_id, {"type": "lost", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
+        return
     
-    elif text in CATEGORIES and step == "wait_category":
-        session["category"] = text
-        session["step"] = "wait_description"
-        set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
-    
+    # 2. 處理步驟流程 (防呆版)
+    if step == "wait_category":
+        if text in CATEGORIES:
+            session["category"] = text
+            session["step"] = "wait_description"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+        else:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請從上方的選單點擊選擇一個分類喔！"))
+            
     elif step == "wait_description":
         session["description"] = text
         if session.get("type") == "found":
@@ -255,22 +265,24 @@ def handle_message_logic(user_id, text, reply_token):
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, get_flex_message('lost_place.json', '請選擇地點'))
 
-    elif step == "wait_photo" and text == "略過":
-        session["step"] = "wait_location_button"
-        set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, get_flex_message('find_place.json', '請選擇地點'))
+    elif step == "wait_photo":
+        if text == "略過":
+            session["step"] = "wait_location_button"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_flex_message('find_place.json', '請選擇地點'))
+        else:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請上傳圖片，或者點擊下方按鈕選擇「略過」喔！"))
         
     elif step == "wait_location_button":
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方的按鈕選擇地點喔！"))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請點擊上方的按鈕選擇地點喔！"))
         
     elif step == "wait_detailed_location":
         session["detailed_location"] = text
         item_type = session.get("type")
         
-        # [修改] 如果是「找東西」，就直接結案並配對
         if item_type == "lost":
             final_data = save_item_to_db(user_id, session)
-            clear_session(user_id)
+            clear_session(user_id) # 結案清空記憶
             
             messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📝 描述：{final_data['description']}\n📍 地點：{final_data['location']} ({final_data['detailed_location']})")]
             
@@ -282,43 +294,40 @@ def handle_message_logic(user_id, text, reply_token):
                     messages.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果："))
                     messages.append(generate_carousel_flex(matches, "系統配對結果"))
                 else:
-                    # [新增] 沒配對到時，推播官方聯絡據點！
                     messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
                     messages.append(get_flex_message('contact_places.json', '聯絡據點'))
             except Exception:
                 pass
             line_bot_api.reply_message(reply_token, messages)
             
-        # [修改] 如果是「撿到東西」，進入詢問「放置地點」流程
-        else:
+        else: # found flow
             session["step"] = "wait_dropoff_options"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, get_flex_message('dropoff.json', '預計送去哪個地點？'))
 
-    # [新增] 處理放置地點的選擇
     elif step == "wait_dropoff_options":
         if text == "其他":
             session["step"] = "wait_custom_dropoff"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入您預計放置的詳細地點："))
-        else:
+        elif text in ["放置原地", "正門警衛室", "學生事務處-軍訓室", "三峽校區綜合體育館"]:
             session["dropoff"] = text
             final_data = save_item_to_db(user_id, session)
-            clear_session(user_id)
+            clear_session(user_id) # 結案清空記憶
             
-            # 結案，並推播官方建議據點卡片感謝他
             messages = [
                 TextSendMessage(text=f"✅ 登記成功！感謝您的熱心！\n📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
                 TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
                 get_flex_message('contact_places.json', '聯絡據點')
             ]
             line_bot_api.reply_message(reply_token, messages)
+        else:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請從上方選單選擇放置地點，或選擇「其他」喔！"))
 
-    # [新增] 處理手動輸入的放置地點
     elif step == "wait_custom_dropoff":
         session["dropoff"] = text
         final_data = save_item_to_db(user_id, session)
-        clear_session(user_id)
+        clear_session(user_id) # 結案清空記憶
         
         messages = [
             TextSendMessage(text=f"✅ 登記成功！感謝您的熱心！\n📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
@@ -327,12 +336,18 @@ def handle_message_logic(user_id, text, reply_token):
         ]
         line_bot_api.reply_message(reply_token, messages)
 
+# 處理按鈕回傳 (防呆版)
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
     session = get_session(user_id)
     
     if action == "set_location":
+        # [防呆重點] 如果使用者按了以前的舊按鈕，但現在根本不是選地點的步驟，直接擋下來！
+        if not session or session.get("step") not in ["wait_location_button", "wait_photo"]:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 操作順序有誤！請重新輸入「選單」開啟新流程喔！"))
+            return
+            
         loc = params.get('loc', [''])[0]
         session["location"] = loc
         session["step"] = "wait_detailed_location"
