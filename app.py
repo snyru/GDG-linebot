@@ -208,7 +208,30 @@ def handle_message_logic(user_id, text, reply_token):
         session["step"] = "wait_description"
         set_session(user_id, session)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
-    # ... 其餘 logic 可以在此延伸
+    elif step == "wait_description":
+        # 儲存剛剛輸入的物品描述
+        session["description"] = text
+        
+        if session.get("type") == "found":
+            # 撿到東西：下一步是傳送「拍照或略過」按鈕
+            session["step"] = "wait_photo"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_photo_flex())
+        else:
+            # 找東西：不需要拍照，直接跳到「選擇地點」按鈕
+            session["step"] = "wait_location_button"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_location_flex("lost"))
+
+    elif step == "wait_photo" and text == "略過":
+        # 如果使用者在拍照階段點擊了「略過」
+        session["step"] = "wait_location_button"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, get_location_flex("found"))
+        
+    elif step == "wait_location_button":
+        # 避免使用者在等待按鈕時輸入文字
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方的按鈕選擇地點喔！"))
 
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
