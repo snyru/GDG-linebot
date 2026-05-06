@@ -1,0 +1,39 @@
+{
+  "type": "bubble",
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "spacing": "sm",
+    "contents": [
+      {
+        "type": "text",
+        "text": "📦 預計送去哪個地點？",
+        "weight": "bold",
+        "size": "lg",
+        "margin": "md",
+        "align": "center"
+      },
+      {
+        "type": "text",
+        "text": "請選擇您放置物品的位置",
+        "size": "sm",
+        "color": "#888888",
+        "align": "center",
+        "margin": "sm"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          { "type": "button", "style": "secondary", "action": { "type": "message", "label": "放置原地", "text": "放置原地" } },
+          { "type": "button", "style": "secondary", "action": { "type": "message", "label": "正門警衛室", "text": "正門警衛室" } },
+          { "type": "button", "style": "secondary", "action": { "type": "message", "label": "學生事務處-軍訓室", "text": "學生事務處-軍訓室" } },
+          { "type": "button", "style": "secondary", "action": { "type": "message", "label": "三峽校區綜合體育館", "text": "三峽校區綜合體育館" } },
+          { "type": "button", "style": "primary", "color": "#999999", "action": { "type": "message", "label": "其他 (手動輸入)", "text": "其他" } }
+        ]
+      }
+    ]
+  }
+}
