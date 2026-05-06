@@ -1,123 +1,68 @@
-import uuid
 import os
 import json
+import io
 from flask import Flask, request, abort
 from urllib.parse import parse_qs
 
-# 引入官方 SDK
+# LINE SDK
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
-    FlexSendMessage, PostbackEvent
+    FlexSendMessage, PostbackEvent, ImageMessage
 )
 
-# ============ 1. 伺服器與 LINE SDK 初始化 ============
+# 引入 Firebase
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# 引入 Cloudinary
+import cloudinary
+import cloudinary.uploader
+
+# ============ 1. 伺服器與第三方服務初始化 ============
 app = Flask(__name__)
 
-# 從環境變數讀取金鑰 (請確保 Render 設定中已有這兩個變數)
+# LINE Bot 初始化
 line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 
-# ============ 2. 假資料庫類別 (FakeDB) ============
-class FakeDB:
-    def __init__(self):
-        self.collections = {
-            'items': {},      # id -> dict
-            'sessions': {},   # user_id -> dict
-            'users': {},
-            'matches': {}
-        }
-    def collection(self, name):
-        return FakeCollection(self, name)
+# Firebase 初始化
+# 我們將 Firebase 憑證 JSON 的「內容」直接存在環境變數 FIREBASE_SERVICE_ACCOUNT 中
+firebase_cert = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+if firebase_cert:
+    cred_dict = json.loads(firebase_cert)
+    cred = credentials.Certificate(cred_dict)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+else:
+    print("尚未設定 FIREBASE_SERVICE_ACCOUNT 環境變數！")
 
-class FakeCollection:
-    def __init__(self, db, name):
-        self.db = db
-        self.name = name
-        self._filters = []
-        self._limit = None
-    def document(self, doc_id):
-        return FakeDoc(self.db, self.name, doc_id)
-    def where(self, field, op, value):
-        new = FakeCollection(self.db, self.name)
-        new._filters = self._filters + [(field, op, value)]
-        new._limit = self._limit
-        return new
-    def limit(self, n):
-        new = FakeCollection(self.db, self.name)
-        new._filters = self._filters
-        new._limit = n
-        return new
-    def stream(self):
-        results = []
-        for doc_id, data in self.db.collections[self.name].items():
-            ok = True
-            for field, op, value in self._filters:
-                if op == '==' and data.get(field) != value:
-                    ok = False
-                    break
-            if ok:
-                results.append(FakeSnapshot(doc_id, data))
-        if self._limit:
-            results = results[:self._limit]
-        return iter(results)
-    def add(self, data):
-        new_id = str(uuid.uuid4())[:8]
-        self.db.collections[self.name][new_id] = data
-        return (None, FakeDoc(self.db, self.name, new_id))
+# Cloudinary 初始化
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
 
-class FakeDoc:
-    def __init__(self, db, collection_name, doc_id):
-        self.db = db
-        self.collection_name = collection_name
-        self.id = doc_id
-    def get(self):
-        data = self.db.collections[self.collection_name].get(self.id)
-        return FakeSnapshot(self.id, data) if data is not None else FakeSnapshot(self.id, None)
-    def set(self, data):
-        self.db.collections[self.collection_name][self.id] = data
-    def update(self, data):
-        if self.id in self.db.collections[self.collection_name]:
-            self.db.collections[self.collection_name][self.id].update(data)
-    def delete(self):
-        self.db.collections[self.collection_name].pop(self.id, None)
-
-class FakeSnapshot:
-    def __init__(self, doc_id, data):
-        self.id = doc_id
-        self._data = data
-    @property
-    def exists(self):
-        return self._data is not None
-    def to_dict(self):
-        return self._data
-
-db = FakeDB()
-
-def seed_data():
-    sample_items = [
-        {'userId': 'u1', 'type': 'lost', 'category': '電子產品', 'description': '黑色 iPhone 14', 'location': '圖書館一樓', 'status': 'open'},
-        {'userId': 'u2', 'type': 'found', 'category': '鑰匙', 'description': '一串鑰匙', 'location': '學生餐廳', 'status': 'open'},
-    ]
-    for item in sample_items:
-        db.collection('items').add(item)
-
-seed_data()
-
-# ============ 3. 業務邏輯函式 ============
+# ============ 2. 業務邏輯與資料庫函式 ============
 CATEGORIES = {"電子產品", "衣服", "鞋子", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
 
 def get_session(user_id):
-    doc = db.collection('sessions').document(user_id).get()
+    doc_ref = db.collection('sessions').document(user_id)
+    doc = doc_ref.get()
     return doc.to_dict() if doc.exists else {}
 
 def set_session(user_id, data):
-    db.collection('sessions').document(user_id).set(data)
+    # 使用 merge=True 以免覆蓋掉其他欄位
+    db.collection('sessions').document(user_id).set(data, merge=True)
 
 def clear_session(user_id):
     db.collection('sessions').document(user_id).delete()
 
+# ============ 3. Flex Message 生成 ============
 def get_location_flex(item_type):
     filename = 'find_place.json' if item_type == 'found' else 'lost_place.json'
     file_path = os.path.join(os.path.dirname(__file__), filename)
@@ -148,15 +93,14 @@ def get_main_menu():
     }
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
-# 這裡修正了原本只有一段文字的分類選單，讓它更完整
-def get_category_menu():
+def get_category_menu(title="我撿到的種類"):
     flex_content = {
         "type": "bubble",
         "size": "mega",
         "body": {
             "type": "box", "layout": "vertical",
             "contents": [
-                {"type": "text", "text": "我撿到的種類", "weight": "bold", "size": "xl", "align": "center", "margin": "md"},
+                {"type": "text", "text": title, "weight": "bold", "size": "xl", "align": "center", "margin": "md"},
                 {"type": "text", "text": "請選擇你的狀況", "size": "md", "color": "#888888", "align": "center", "margin": "md"},
                 {"type": "box", "layout": "vertical", "spacing": "md", "margin": "xl",
                  "contents": [
@@ -184,44 +128,7 @@ def get_category_menu():
             ]
         }
     }
-    return FlexSendMessage(alt_text="請選擇撿到的種類", contents=flex_content)
-
-def find_category_menu():
-    flex_content = {
-        "type": "bubble",
-        "size": "mega",
-        "body": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": "我在找的東西的種類", "weight": "bold", "size": "xl", "align": "center", "margin": "md"},
-                {"type": "text", "text": "請選擇你的狀況", "size": "md", "color": "#888888", "align": "center", "margin": "md"},
-                {"type": "box", "layout": "vertical", "spacing": "md", "margin": "xl",
-                 "contents": [
-                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "電子產品", "text": "電子產品"}},
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "衣服", "text": "衣服"}}
-                     ]},
-                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "鞋子", "text": "鞋子"}},
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "證件", "text": "證件"}}
-                     ]},
-                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "錢包", "text": "錢包"}},
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "雨傘", "text": "雨傘"}}
-                     ]},
-                     {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "書籍", "text": "書籍"}},
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "其他", "text": "其他"}}
-                     ]},
-                     {"type": "box", "layout": "horizontal",
-                      "contents": [
-                          {"type": "button", "style": "secondary", "action": {"type": "message", "label": "配飾 (耳環、項鍊、手鏈)", "text": "配飾"}}
-                      ]}
-                 ]}
-            ]
-        }
-    }
-    return FlexSendMessage(alt_text="請選擇在找的東西的種類", contents=flex_content)
+    return FlexSendMessage(alt_text=f"請選擇{title}", contents=flex_content)
 
 # ============ 4. 訊息與事件處理邏輯 ============
 def handle_message_logic(user_id, text, reply_token):
@@ -236,46 +143,41 @@ def handle_message_logic(user_id, text, reply_token):
 
     if text == "我撿到東西了":
         set_session(user_id, {"type": "found", "step": "wait_category"})
-        line_bot_api.reply_message(reply_token, get_category_menu())
+        line_bot_api.reply_message(reply_token, get_category_menu("我撿到的種類"))
     elif text == "我在找東西":
         set_session(user_id, {"type": "lost", "step": "wait_category"})
-        line_bot_api.reply_message(reply_token, find_category_menu())
+        line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
     elif text in CATEGORIES and step == "wait_category":
         session["category"] = text
         session["step"] = "wait_description"
         set_session(user_id, session)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
     elif step == "wait_description":
-        # 儲存剛剛輸入的物品描述
         session["description"] = text
         
         if session.get("type") == "found":
-            # 撿到東西：下一步是傳送「拍照或略過」按鈕
             session["step"] = "wait_photo"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, get_photo_flex())
         else:
-            # 找東西：不需要拍照，直接跳到「選擇地點」按鈕
             session["step"] = "wait_location_button"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, get_location_flex("lost"))
 
     elif step == "wait_photo" and text == "略過":
-        # 如果使用者在拍照階段點擊了「略過」
         session["step"] = "wait_location_button"
         set_session(user_id, session)
         line_bot_api.reply_message(reply_token, get_location_flex("found"))
         
     elif step == "wait_location_button":
-        # 避免使用者在等待按鈕時輸入文字
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方的按鈕選擇地點喔！"))
         
     elif step == "wait_detailed_location":
-        # 1. 儲存使用者輸入的詳細地點
         detailed_location = text
         main_location = session.get("location", "未知地點")
+        photo_url = session.get("photo_url", "")
         
-        # 2. 準備存入資料庫的完整資料 (這裡示範整合目前的資料)
+        # 準備存入 Firestore 的完整資料
         final_data = {
             "userId": user_id,
             "type": session.get("type"),
@@ -283,42 +185,68 @@ def handle_message_logic(user_id, text, reply_token):
             "description": session.get("description"),
             "location": main_location,
             "detailed_location": detailed_location,
-            "status": "open"
+            "photo_url": photo_url,
+            "status": "open",
+            "timestamp": firestore.SERVER_TIMESTAMP
         }
         
-        # [未來擴充] 可以在這裡呼叫 db.collection('items').add(final_data) 存進資料庫
+        # 正式寫入 Firestore 資料庫的 items 集合
+        db.collection('items').add(final_data)
         
-        # 3. 清除 Session，結束這回合的對話
         clear_session(user_id)
         
-        # 4. 回傳確認訊息給使用者，讓他們知道登記成功了
         summary = (
             f"✅ 登記成功！\n"
             f"📌 分類：{final_data['category']}\n"
             f"📝 描述：{final_data['description']}\n"
             f"📍 地點：{final_data['location']} ({final_data['detailed_location']})"
         )
+        if photo_url:
+            summary += "\n📷 照片已成功上傳"
+            
         line_bot_api.reply_message(reply_token, TextSendMessage(text=summary))
 
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
-    
-    # 記得抓取使用者的 session
     session = get_session(user_id)
     
     if action == "set_location":
         loc = params.get('loc', [''])[0]
-        
-        # 1. 儲存大略地點
         session["location"] = loc
-        # 2. 將狀態推進到「等待詳細地點」
         session["step"] = "wait_detailed_location"
         set_session(user_id, session)
         
-        # 3. 提示使用者輸入文字
         reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
+
+# 處理照片上傳的邏輯 (Cloudinary)
+def handle_image_message_logic(user_id, message_id, reply_token):
+    session = get_session(user_id)
+    step = session.get("step")
+    
+    if step == "wait_photo":
+        # 提示正在處理中，避免使用者等太久
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="照片上傳中，請稍候..."))
+        
+        # 從 LINE 伺服器取得圖片位元組
+        message_content = line_bot_api.get_message_content(message_id)
+        image_io = io.BytesIO(b''.join(message_content.iter_content()))
+        
+        # 上傳到 Cloudinary
+        upload_result = cloudinary.uploader.upload(image_io)
+        image_url = upload_result.get("secure_url")
+        
+        # 更新 Session
+        session["photo_url"] = image_url
+        session["step"] = "wait_location_button"
+        set_session(user_id, session)
+        
+        # 補發一個地點選擇的按鈕
+        # 注意: 這裡不能再次使用 reply_message，因為 reply_token 只能用一次。改用 push_message。
+        line_bot_api.push_message(user_id, get_location_flex("found"))
+    else:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前不需要傳送照片喔，請根據指示操作！"))
 
 # ============ 5. Flask Webhook 入口 ============
 @app.route("/", methods=['GET'])
@@ -344,6 +272,10 @@ def handle_message(event):
 @handler.add(PostbackEvent)
 def handle_postback(event):
     handle_postback_logic(event.source.user_id, event.postback.data, event.reply_token)
+
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    handle_image_message_logic(event.source.user_id, event.message.id, event.reply_token)
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 10000))
