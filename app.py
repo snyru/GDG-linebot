@@ -23,23 +23,25 @@ import cloudinary.uploader
 # ============ 1. 伺服器與第三方服務初始化 ============
 app = Flask(__name__)
 
-# LINE Bot 初始化
-line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
-handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
+# LINE Bot 初始化 (配合你 Render 的環境變數名稱)
+line_bot_api = LineBotApi(os.getenv('LINE_TOKEN'))
+handler = WebhookHandler(os.getenv('LINE_SECRET'))
 
-# Firebase 初始化
-# 我們將 Firebase 憑證 JSON 的「內容」直接存在環境變數 FIREBASE_SERVICE_ACCOUNT 中
-firebase_cert = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+# Firebase 初始化 (配合你 Render 的環境變數名稱)
+firebase_cert = os.getenv("FIREBASE_CREDENTIALS")
 if firebase_cert:
-    cred_dict = json.loads(firebase_cert)
-    cred = credentials.Certificate(cred_dict)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
+    try:
+        cred_dict = json.loads(firebase_cert)
+        cred = credentials.Certificate(cred_dict)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+    except Exception as e:
+        print(f"Firebase 初始化失敗: {e}")
 else:
-    print("尚未設定 FIREBASE_SERVICE_ACCOUNT 環境變數！")
+    print("尚未設定 FIREBASE_CREDENTIALS 環境變數！")
 
-# Cloudinary 初始化
+# Cloudinary 初始化 (配合你 Render 的環境變數名稱)
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -51,16 +53,26 @@ cloudinary.config(
 CATEGORIES = {"電子產品", "衣服", "鞋子", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
 
 def get_session(user_id):
-    doc_ref = db.collection('sessions').document(user_id)
-    doc = doc_ref.get()
-    return doc.to_dict() if doc.exists else {}
+    try:
+        doc_ref = db.collection('sessions').document(user_id)
+        doc = doc_ref.get()
+        return doc.to_dict() if doc.exists else {}
+    except Exception as e:
+        print(f"讀取 Session 失敗: {e}")
+        return {}
 
 def set_session(user_id, data):
-    # 使用 merge=True 以免覆蓋掉其他欄位
-    db.collection('sessions').document(user_id).set(data, merge=True)
+    try:
+        # 使用 merge=True 以免覆蓋掉其他欄位
+        db.collection('sessions').document(user_id).set(data, merge=True)
+    except Exception as e:
+        print(f"寫入 Session 失敗: {e}")
 
 def clear_session(user_id):
-    db.collection('sessions').document(user_id).delete()
+    try:
+        db.collection('sessions').document(user_id).delete()
+    except Exception as e:
+        print(f"清除 Session 失敗: {e}")
 
 # ============ 3. Flex Message 生成 ============
 def get_location_flex(item_type):
@@ -190,8 +202,11 @@ def handle_message_logic(user_id, text, reply_token):
             "timestamp": firestore.SERVER_TIMESTAMP
         }
         
-        # 正式寫入 Firestore 資料庫的 items 集合
-        db.collection('items').add(final_data)
+        try:
+            # 正式寫入 Firestore 資料庫的 items 集合
+            db.collection('items').add(final_data)
+        except Exception as e:
+            print(f"寫入 items 失敗: {e}")
         
         clear_session(user_id)
         
@@ -229,22 +244,25 @@ def handle_image_message_logic(user_id, message_id, reply_token):
         # 提示正在處理中，避免使用者等太久
         line_bot_api.reply_message(reply_token, TextSendMessage(text="照片上傳中，請稍候..."))
         
-        # 從 LINE 伺服器取得圖片位元組
-        message_content = line_bot_api.get_message_content(message_id)
-        image_io = io.BytesIO(b''.join(message_content.iter_content()))
-        
-        # 上傳到 Cloudinary
-        upload_result = cloudinary.uploader.upload(image_io)
-        image_url = upload_result.get("secure_url")
-        
-        # 更新 Session
-        session["photo_url"] = image_url
-        session["step"] = "wait_location_button"
-        set_session(user_id, session)
-        
-        # 補發一個地點選擇的按鈕
-        # 注意: 這裡不能再次使用 reply_message，因為 reply_token 只能用一次。改用 push_message。
-        line_bot_api.push_message(user_id, get_location_flex("found"))
+        try:
+            # 從 LINE 伺服器取得圖片位元組
+            message_content = line_bot_api.get_message_content(message_id)
+            image_io = io.BytesIO(b''.join(message_content.iter_content()))
+            
+            # 上傳到 Cloudinary
+            upload_result = cloudinary.uploader.upload(image_io)
+            image_url = upload_result.get("secure_url")
+            
+            # 更新 Session
+            session["photo_url"] = image_url
+            session["step"] = "wait_location_button"
+            set_session(user_id, session)
+            
+            # 補發一個地點選擇的按鈕
+            line_bot_api.push_message(user_id, get_location_flex("found"))
+        except Exception as e:
+            print(f"圖片上傳失敗: {e}")
+            line_bot_api.push_message(user_id, TextSendMessage(text="照片上傳失敗，請稍後再試。"))
     else:
         line_bot_api.reply_message(reply_token, TextSendMessage(text="目前不需要傳送照片喔，請根據指示操作！"))
 
