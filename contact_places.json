@@ -1,0 +1,90 @@
+{
+  "type": "carousel",
+  "contents": [
+    {
+      "type": "bubble",
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          { "type": "text", "text": "三峽校區正門警衛室", "weight": "bold", "size": "xl", "wrap": true },
+          { "type": "box", "layout": "baseline", "margin": "md", "contents": [
+              { "type": "text", "text": "📍", "flex": 0, "size": "sm" },
+              { "type": "text", "text": "新北市三峽區大學路151號", "size": "sm", "color": "#7582A5", "margin": "sm", "wrap": true }
+            ]
+          },
+          { "type": "box", "layout": "baseline", "margin": "md", "contents": [
+              { "type": "text", "text": "🕒", "flex": 0, "size": "sm" },
+              { "type": "text", "text": "24小時全年無休", "size": "sm", "color": "#7582A5", "margin": "sm", "wrap": true }
+            ]
+          }
+        ]
+      },
+      "footer": {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "contents": [
+          { "type": "button", "style": "link", "color": "#4A62D6", "action": { "type": "uri", "label": "緊急事件通報專線", "uri": "tel:0286711111" } },
+          { "type": "button", "style": "link", "color": "#4A62D6", "action": { "type": "uri", "label": "警衛室/駐警隊專線", "uri": "tel:0286713035" } }
+        ]
+      }
+    },
+    {
+      "type": "bubble",
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          { "type": "text", "text": "學生事務處-軍訓室", "weight": "bold", "size": "xl", "wrap": true },
+          { "type": "box", "layout": "baseline", "margin": "md", "contents": [
+              { "type": "text", "text": "📍", "flex": 0, "size": "sm" },
+              { "type": "text", "text": "三峽校區行政大樓一樓", "size": "sm", "color": "#7582A5", "margin": "sm", "wrap": true }
+            ]
+          },
+          { "type": "box", "layout": "baseline", "margin": "md", "contents": [
+              { "type": "text", "text": "🕒", "flex": 0, "size": "sm" },
+              { "type": "text", "text": "上班日 08:00 - 17:00", "size": "sm", "color": "#7582A5", "margin": "sm", "wrap": true }
+            ]
+          }
+        ]
+      },
+      "footer": {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "contents": [
+          { "type": "button", "style": "link", "color": "#4A62D6", "action": { "type": "uri", "label": "聯絡專線", "uri": "tel:0286741111" } }
+        ]
+      }
+    },
+    {
+      "type": "bubble",
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          { "type": "text", "text": "綜合體育館暨學生活動中心", "weight": "bold", "size": "lg", "wrap": true },
+          { "type": "box", "layout": "baseline", "margin": "md", "contents": [
+              { "type": "text", "text": "📍", "flex": 0, "size": "sm" },
+              { "type": "text", "text": "新北市三峽區大學路151號", "size": "sm", "color": "#7582A5", "margin": "sm", "wrap": true }
+            ]
+          },
+          { "type": "box", "layout": "baseline", "margin": "md", "contents": [
+              { "type": "text", "text": "🕒", "flex": 0, "size": "sm" },
+              { "type": "text", "text": "週一至週日 6:00-22:00", "size": "sm", "color": "#7582A5", "margin": "sm", "wrap": true }
+            ]
+          }
+        ]
+      },
+      "footer": {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "contents": [
+          { "type": "button", "style": "link", "color": "#4A62D6", "action": { "type": "uri", "label": "聯絡專線", "uri": "tel:0286713035" } }
+        ]
+      }
+    }
+  ]
+}
