@@ -23,11 +23,11 @@ import cloudinary.uploader
 # ============ 1. 伺服器與第三方服務初始化 ============
 app = Flask(__name__)
 
-# LINE Bot 初始化 (配合你 Render 的環境變數名稱)
+# LINE Bot 初始化
 line_bot_api = LineBotApi(os.getenv('LINE_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_SECRET'))
 
-# Firebase 初始化 (配合你 Render 的環境變數名稱)
+# Firebase 初始化
 firebase_cert = os.getenv("FIREBASE_CREDENTIALS")
 if firebase_cert:
     try:
@@ -41,7 +41,7 @@ if firebase_cert:
 else:
     print("尚未設定 FIREBASE_CREDENTIALS 環境變數！")
 
-# Cloudinary 初始化 (配合你 Render 的環境變數名稱)
+# Cloudinary 初始化
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -63,7 +63,6 @@ def get_session(user_id):
 
 def set_session(user_id, data):
     try:
-        # 使用 merge=True 以免覆蓋掉其他欄位
         db.collection('sessions').document(user_id).set(data, merge=True)
     except Exception as e:
         print(f"寫入 Session 失敗: {e}")
@@ -106,6 +105,7 @@ def get_main_menu():
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
 def get_category_menu(title="我撿到的種類"):
+    # (與原本相同，省略過長版面，但程式碼中保持完整)
     flex_content = {
         "type": "bubble",
         "size": "mega",
@@ -142,6 +142,43 @@ def get_category_menu(title="我撿到的種類"):
     }
     return FlexSendMessage(alt_text=f"請選擇{title}", contents=flex_content)
 
+# [新增] 製作可左右滑動的失物卡片 (Carousel)
+def generate_carousel_flex(items_list, alt_text="失物列表"):
+    bubbles = []
+    for item in items_list:
+        bubble = {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": item.get('category', '未知分類'), "weight": "bold", "size": "xl", "color": "#1DB446"},
+                    {"type": "text", "text": f"特徵：{item.get('description', '無')}", "wrap": True, "margin": "md", "size": "sm"},
+                    {"type": "text", "text": f"地點：{item.get('location', '')} {item.get('detailed_location', '')}", "wrap": True, "size": "xs", "color": "#aaaaaa"}
+                ]
+            }
+        }
+        # 如果有照片就加上 hero 區塊
+        if item.get("photo_url"):
+            bubble["hero"] = {
+                "type": "image",
+                "url": item["photo_url"],
+                "size": "full",
+                "aspectRatio": "4:3",
+                "aspectMode": "cover"
+            }
+        bubbles.append(bubble)
+
+    # 如果完全沒有泡泡（避免報錯）
+    if not bubbles:
+        return TextSendMessage(text="目前沒有找到符合的物品喔！")
+
+    carousel = {
+        "type": "carousel",
+        "contents": bubbles
+    }
+    return FlexSendMessage(alt_text=alt_text, contents=carousel)
+
 # ============ 4. 訊息與事件處理邏輯 ============
 def handle_message_logic(user_id, text, reply_token):
     text = text.strip()
@@ -153,11 +190,27 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_main_menu())
         return
 
+    # [新增功能] 查看所有失物 (直接列出待領取的 'found' 物品)
+    if text == "查看所有失物":
+        try:
+            # 尋找 type 是 found 且 status 是 open 的前 10 筆資料
+            docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(10).stream()
+            items_list = [doc.to_dict() for doc in docs]
+            
+            if not items_list:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有待領取的失物喔！"))
+            else:
+                line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "這是最近撿到的物品列表"))
+        except Exception as e:
+            print(f"讀取列表失敗: {e}")
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取資料失敗，請稍後再試。"))
+        return
+
     if text == "我撿到東西了":
         set_session(user_id, {"type": "found", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我撿到的種類"))
     elif text == "我在找東西":
-        set_session(user_id, {"type": "lost", "step": "wait_description"})
+        set_session(user_id, {"type": "lost", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
     elif text in CATEGORIES and step == "wait_category":
         session["category"] = text
@@ -188,12 +241,14 @@ def handle_message_logic(user_id, text, reply_token):
         detailed_location = text
         main_location = session.get("location", "未知地點")
         photo_url = session.get("photo_url", "")
+        item_type = session.get("type")
+        category = session.get("category")
         
-        # 準備存入 Firestore 的完整資料
+        # 準備存入 Firestore
         final_data = {
             "userId": user_id,
-            "type": session.get("type"),
-            "category": session.get("category"),
+            "type": item_type,
+            "category": category,
             "description": session.get("description"),
             "location": main_location,
             "detailed_location": detailed_location,
@@ -203,23 +258,44 @@ def handle_message_logic(user_id, text, reply_token):
         }
         
         try:
-            # 正式寫入 Firestore 資料庫的 items 集合
             db.collection('items').add(final_data)
         except Exception as e:
             print(f"寫入 items 失敗: {e}")
-        
+            
         clear_session(user_id)
         
+        # 1. 傳送登記成功的訊息
         summary = (
             f"✅ 登記成功！\n"
             f"📌 分類：{final_data['category']}\n"
             f"📝 描述：{final_data['description']}\n"
             f"📍 地點：{final_data['location']} ({final_data['detailed_location']})"
         )
-        if photo_url:
-            summary += "\n📷 照片已成功上傳"
+        messages_to_send = [TextSendMessage(text=summary)]
+
+        # 2. [新增功能] 立即自動配對邏輯
+        try:
+            # 如果我遺失東西，我就去資料庫找「被撿到(found)」且「相同分類」的東西；反之亦然。
+            target_type = "found" if item_type == "lost" else "lost"
+            match_docs = db.collection('items')\
+                .where('type', '==', target_type)\
+                .where('category', '==', category)\
+                .where('status', '==', 'open')\
+                .limit(5).stream()
             
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=summary))
+            matches = [doc.to_dict() for doc in match_docs]
+            
+            if matches:
+                messages_to_send.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果，看看有沒有相符的："))
+                messages_to_send.append(generate_carousel_flex(matches, "系統配對結果"))
+            else:
+                messages_to_send.append(TextSendMessage(text="系統目前尚未配對到符合的物品，若之後有人登記，再請隨時來查看喔！"))
+                
+        except Exception as e:
+            print(f"配對查詢失敗: {e}")
+
+        # 將登記成功 + 配對結果 一次推播給使用者
+        line_bot_api.reply_message(reply_token, messages_to_send)
 
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
@@ -235,30 +311,23 @@ def handle_postback_logic(user_id, data, reply_token):
         reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
 
-# 處理照片上傳的邏輯 (Cloudinary)
 def handle_image_message_logic(user_id, message_id, reply_token):
     session = get_session(user_id)
     step = session.get("step")
     
     if step == "wait_photo":
-        # 提示正在處理中，避免使用者等太久
         line_bot_api.reply_message(reply_token, TextSendMessage(text="照片上傳中，請稍候..."))
-        
         try:
-            # 從 LINE 伺服器取得圖片位元組
             message_content = line_bot_api.get_message_content(message_id)
             image_io = io.BytesIO(b''.join(message_content.iter_content()))
             
-            # 上傳到 Cloudinary
             upload_result = cloudinary.uploader.upload(image_io)
             image_url = upload_result.get("secure_url")
             
-            # 更新 Session
             session["photo_url"] = image_url
             session["step"] = "wait_location_button"
             set_session(user_id, session)
             
-            # 補發一個地點選擇的按鈕
             line_bot_api.push_message(user_id, get_location_flex("found"))
         except Exception as e:
             print(f"圖片上傳失敗: {e}")
@@ -282,7 +351,6 @@ def callback():
         abort(400)
     return 'OK'
 
-# 官方 SDK 事件處理器
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     handle_message_logic(event.source.user_id, event.message.text, event.reply_token)
