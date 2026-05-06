@@ -104,7 +104,7 @@ def get_main_menu():
     }
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
-def get_category_menu(title="撿到的種類"):
+def get_category_menu(title="我撿到的種類"):
     flex_content = {
         "type": "bubble",
         "size": "mega",
@@ -141,7 +141,8 @@ def get_category_menu(title="撿到的種類"):
     }
     return FlexSendMessage(alt_text=f"請選擇{title}", contents=flex_content)
 
-def generate_carousel_flex(items_list, alt_text="失物列表"):
+# [重點修改] 加上 show_claim_button 參數，預設為 True，但可以設定為 False 隱藏按鈕
+def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_button=True):
     bubbles = []
     for item in items_list:
         bubble = {
@@ -165,8 +166,8 @@ def generate_carousel_flex(items_list, alt_text="失物列表"):
                 "aspectMode": "cover"
             }
         
-        # 加入「這是我的！」按鈕
-        if "doc_id" in item:
+        # 只有在 show_claim_button 為 True 且有 doc_id 時才顯示按鈕
+        if show_claim_button and "doc_id" in item:
             bubble["footer"] = {
                 "type": "box",
                 "layout": "vertical",
@@ -207,7 +208,7 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_main_menu())
         return
 
-    # 查看所有失物
+    # [重點修改] 查看所有失物時，傳入 show_claim_button=False，這樣按鈕就不會出現了！
     if text == "查看所有失物":
         try:
             docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(10).stream()
@@ -220,7 +221,7 @@ def handle_message_logic(user_id, text, reply_token):
             if not items_list:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有待領取的失物喔！"))
             else:
-                line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "這是最近撿到的物品列表"))
+                line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "這是最近撿到的物品列表", show_claim_button=False))
         except Exception as e:
             print(f"讀取列表失敗: {e}")
             line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取資料失敗，請稍後再試。"))
@@ -283,7 +284,6 @@ def handle_message_logic(user_id, text, reply_token):
             
         clear_session(user_id)
         
-        # 1. 回覆登記成功訊息
         summary = (
             f"✅ 登記成功！\n"
             f"📌 分類：{final_data['category']}\n"
@@ -292,10 +292,8 @@ def handle_message_logic(user_id, text, reply_token):
         )
         messages_to_send = [TextSendMessage(text=summary)]
 
-        # 2. [修改重點] 只有當使用者是「遺失物品 (lost)」時，才進行自動配對
         if item_type == "lost":
             try:
-                # 尋找 type 是 found 的物品
                 target_type = "found"
                 match_docs = db.collection('items')\
                     .where('type', '==', target_type)\
@@ -311,17 +309,16 @@ def handle_message_logic(user_id, text, reply_token):
                 
                 if matches:
                     messages_to_send.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果，看看有沒有您的失物："))
-                    messages_to_send.append(generate_carousel_flex(matches, "系統配對結果"))
+                    # 這裡沒有加上 show_claim_button=False，所以預設為 True，會顯示領回按鈕！
+                    messages_to_send.append(generate_carousel_flex(matches, "系統配推結果"))
                 else:
                     messages_to_send.append(TextSendMessage(text="系統目前尚未配對到符合的物品，若之後有人登記，再請隨時來查看喔！"))
                     
             except Exception as e:
                 print(f"配對查詢失敗: {e}")
 
-        # 如果是 found，messages_to_send 就只會有一則「登記成功」的文字訊息而已
         line_bot_api.reply_message(reply_token, messages_to_send)
 
-# 處理 Postback 按鈕動作
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
@@ -333,7 +330,7 @@ def handle_postback_logic(user_id, data, reply_token):
         session["step"] = "wait_detailed_location"
         set_session(user_id, session)
         
-        reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）"
+        reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
         
     elif action == "claim_item":
@@ -346,7 +343,6 @@ def handle_postback_logic(user_id, data, reply_token):
             print(f"標記狀態失敗: {e}")
             line_bot_api.reply_message(reply_token, TextSendMessage(text="Oops, 標記失敗，請稍後再試。"))
 
-# 處理圖片上傳
 def handle_image_message_logic(user_id, message_id, reply_token):
     session = get_session(user_id)
     step = session.get("step")
