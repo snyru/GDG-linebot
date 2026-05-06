@@ -104,7 +104,7 @@ def get_main_menu():
     }
     return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
 
-def get_category_menu(title="我撿到的種類"):
+def get_category_menu(title="撿到的種類"):
     flex_content = {
         "type": "bubble",
         "size": "mega",
@@ -333,7 +333,7 @@ def handle_postback_logic(user_id, data, reply_token):
         session["step"] = "wait_detailed_location"
         set_session(user_id, session)
         
-        reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："
+        reply_msg = f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）"
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_msg))
         
     elif action == "claim_item":
