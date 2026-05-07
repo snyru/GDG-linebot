@@ -248,22 +248,22 @@ def handle_message_logic(user_id, text, reply_token):
     if step == "wait_category":
         if text in CATEGORIES:
             session["category"] = text
-            session["step"] = "wait_description"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+            if session.get("type") == "found":
+                session["step"] = "wait_description"
+                set_session(user_id, session)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+            else:
+                session["step"] = "wait_location_button"
+                set_session(user_id, session)
+                line_bot_api.reply_message(reply_token, get_flex_message('lost_place.json', '請選擇地點'))
         else:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請從上方的選單點擊選擇一個分類喔！"))
             
     elif step == "wait_description":
         session["description"] = text
-        if session.get("type") == "found":
-            session["step"] = "wait_photo"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳照片或略過'))
-        else:
-            session["step"] = "wait_location_button"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_flex_message('lost_place.json', '請選擇地點'))
+        session["step"] = "wait_photo"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳照片或略過'))
 
     elif step == "wait_photo":
         if text == "略過":
@@ -338,7 +338,7 @@ def handle_postback_logic(user_id, data, reply_token):
             final_data = save_item_to_db(user_id, session)
             clear_session(user_id) # 結案清空記憶
             
-            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📝 描述：{final_data['description']}\n📍 地點：{final_data['location']}")]
+            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📍 地點：{final_data['location']}")]
             
             try:
                 match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
