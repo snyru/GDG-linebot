@@ -240,7 +240,7 @@ def handle_message_logic(user_id, text, reply_token):
         
     elif text == "我在找東西":
         clear_session(user_id) # 強制清空舊記憶
-        set_session(user_id, {"type": "lost", "step": "wait_description"})
+        set_session(user_id, {"type": "lost", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
         return
     
@@ -280,31 +280,14 @@ def handle_message_logic(user_id, text, reply_token):
         session["detailed_location"] = text
         item_type = session.get("type")
         
-        if item_type == "lost":
-            final_data = save_item_to_db(user_id, session)
-            clear_session(user_id) # 結案清空記憶
-            
-            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📝 描述：{final_data['description']}\n📍 地點：{final_data['location']} ({final_data['detailed_location']})")]
-            
-            try:
-                match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
-                matches = [{"doc_id": doc.id, **doc.to_dict()} for doc in match_docs]
-                
-                if matches:
-                    messages.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果："))
-                    messages.append(generate_carousel_flex(matches, "系統配對結果"))
-                else:
-                    messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
-                    messages.append(get_flex_message('contact_places.json', '聯絡據點'))
-            except Exception:
-                pass
-            line_bot_api.reply_message(reply_token, messages)
-            
-        else: # found flow
+        if item_type == "found": 
             session["step"] = "wait_dropoff_options"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, get_flex_message('dropoff.json', '預計送去哪個地點？'))
-
+        else:
+            clear_session(user_id) # 防呆機制
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="流程有誤，請重新輸入「選單」開始。"))
+            
     elif step == "wait_dropoff_options":
         if text == "其他":
             session["step"] = "wait_custom_dropoff"
@@ -350,9 +333,30 @@ def handle_postback_logic(user_id, data, reply_token):
             
         loc = params.get('loc', [''])[0]
         session["location"] = loc
-        session["step"] = "wait_detailed_location"
-        set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："))
+        if session.get("type") == "lost":
+            session["detailed_location"] = "" # 直接給空字串
+            final_data = save_item_to_db(user_id, session)
+            clear_session(user_id) # 結案清空記憶
+            
+            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📝 描述：{final_data['description']}\n📍 地點：{final_data['location']}")]
+            
+            try:
+                match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
+                matches = [{"doc_id": doc.id, **doc.to_dict()} for doc in match_docs]
+                
+                if matches:
+                    messages.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果："))
+                    messages.append(generate_carousel_flex(matches, "系統配對結果"))
+                else:
+                    messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
+                    messages.append(get_flex_message('contact_places.json', '聯絡據點'))
+            except Exception:
+                pass
+            line_bot_api.reply_message(reply_token, messages)
+        else:
+            session["step"] = "wait_detailed_location"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："))
         
     elif action == "claim_item":
         item_id = params.get('item_id', [''])[0]
