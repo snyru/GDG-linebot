@@ -240,7 +240,7 @@ def handle_message_logic(user_id, text, reply_token):
         
     elif text == "我在找東西":
         clear_session(user_id) # 強制清空舊記憶
-        set_session(user_id, {"type": "lost", "step": "wait_category"})
+        set_session(user_id, {"type": "lost", "step": "wait_description"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
         return
     
