@@ -91,6 +91,7 @@
             "layout": "horizontal",
             "spacing": "sm",
             "contents": [
+              { "type": "button", "style": "secondary", "action": { "type": "postback", "label": "資訊中心", "data": "action=set_location&loc=資訊中心", "displayText": "資訊中心" } },
               { "type": "button", "style": "secondary", "action": { "type": "postback", "label": "其他", "data": "action=set_location&loc=其他", "displayText": "其他" } }
             ]
           }
