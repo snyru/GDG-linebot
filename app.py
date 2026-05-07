@@ -338,7 +338,7 @@ def handle_postback_logic(user_id, data, reply_token):
             final_data = save_item_to_db(user_id, session)
             clear_session(user_id) # 結案清空記憶
             
-            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📍 地點：{final_data['location']}")]
+            messages = []
             
             try:
                 match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
@@ -352,7 +352,10 @@ def handle_postback_logic(user_id, data, reply_token):
                     messages.append(get_flex_message('contact_places.json', '聯絡據點'))
             except Exception:
                 pass
-            line_bot_api.reply_message(reply_token, messages)
+            if messages:
+                line_bot_api.reply_message(reply_token, messages)
+            else:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="搜尋時發生錯誤，請稍後再試。"))
         else:
             session["step"] = "wait_detailed_location"
             set_session(user_id, session)
