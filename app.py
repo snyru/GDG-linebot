@@ -20,7 +20,7 @@ import cloudinary.uploader
 # ============ 1. 伺服器與第三方服務初始化 ============
 app = Flask(__name__)
 
-line_bot_api = LineBotApi(os.getenv('LINE_TOKEN'))
+line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_SECRET'))
 
 firebase_cert = os.getenv("FIREBASE_CREDENTIALS")
