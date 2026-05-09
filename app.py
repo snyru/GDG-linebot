@@ -66,26 +66,6 @@ def clear_session(user_id):
     except Exception as e:
         pass
 
-# 寫入資料庫的共用函式 (確保如果有沒填到的資料，會補上空字串而不是 None)
-def save_item_to_db(user_id, session):
-    final_data = {
-        "userId": user_id,
-        "type": session.get("type"),
-        "category": session.get("category", "未知分類"),
-        "description": session.get("description", "無"),
-        "location": session.get("location", "未知"),
-        "detailed_location": session.get("detailed_location", ""),
-        "dropoff": session.get("dropoff", ""),
-        "photo_url": session.get("photo_url", ""),
-        "status": "open",
-        "timestamp": firestore.SERVER_TIMESTAMP
-    }
-    try:
-        db.collection('items').add(final_data)
-    except Exception as e:
-        print(f"寫入 items 失敗: {e}")
-    return final_data
-
 # ============ 3. Flex Message 生成 ============
 def get_flex_message(filename, alt_text):
     file_path = os.path.join(os.path.dirname(__file__), filename)
@@ -168,7 +148,7 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
                 {"type": "text", "text": f"📍 目前放置於：{item['dropoff']}", "wrap": True, "size": "sm", "color": "#FF3366", "weight": "bold", "margin": "md"}
             )
             
-        # 【修改圖片為 fit 模式，加上灰底】
+        # 【修改點：圖片改為 1:1 比例，並設定 fit 模式不裁切，加上淺灰背景】
         if item.get("photo_url"):
             bubble["hero"] = {
                 "type": "image",
@@ -191,7 +171,7 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
                         "color": "#FF6B6E",
                         "action": {
                             "type": "postback",
-                            "label": "✋ 這是我的！（點選標示領回）",
+                            "label": "✋ 這是我的！",
                             "data": f"action=claim_item&item_id={item['doc_id']}",
                             "displayText": "我想領回這個物品"
                         }
@@ -209,6 +189,25 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
     }
     return FlexSendMessage(alt_text=alt_text, contents=carousel)
 
+# 寫入資料庫的共用函式 (確保如果有沒填到的資料，會補上空字串而不是 None)
+def save_item_to_db(user_id, session):
+    final_data = {
+        "userId": user_id,
+        "type": session.get("type"),
+        "category": session.get("category", "未知分類"),
+        "description": session.get("description", "無"),
+        "location": session.get("location", "未知"),
+        "detailed_location": session.get("detailed_location", ""),
+        "dropoff": session.get("dropoff", ""),
+        "photo_url": session.get("photo_url", ""),
+        "status": "open",
+        "timestamp": firestore.SERVER_TIMESTAMP
+    }
+    try:
+        db.collection('items').add(final_data)
+    except Exception as e:
+        print(f"寫入 items 失敗: {e}")
+    return final_data
 
 # ============ 4. 訊息與事件處理邏輯 ============
 def handle_message_logic(user_id, text, reply_token):
@@ -251,22 +250,22 @@ def handle_message_logic(user_id, text, reply_token):
     if step == "wait_category":
         if text in CATEGORIES:
             session["category"] = text
-            session["step"] = "wait_description"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+            if session.get("type") == "found":
+                session["step"] = "wait_description"
+                set_session(user_id, session)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{text}\n請輸入物品的詳細描述："))
+            else:
+                session["step"] = "wait_location_button"
+                set_session(user_id, session)
+                line_bot_api.reply_message(reply_token, get_flex_message('lost_place.json', '請選擇地點'))
         else:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請從上方的選單點擊選擇一個分類喔！"))
             
     elif step == "wait_description":
         session["description"] = text
-        if session.get("type") == "found":
-            session["step"] = "wait_photo"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳照片或略過'))
-        else:
-            session["step"] = "wait_location_button"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_flex_message('lost_place.json', '請選擇地點'))
+        session["step"] = "wait_photo"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳照片或略過'))
 
     elif step == "wait_photo":
         if text == "略過":
@@ -283,31 +282,14 @@ def handle_message_logic(user_id, text, reply_token):
         session["detailed_location"] = text
         item_type = session.get("type")
         
-        if item_type == "lost":
-            final_data = save_item_to_db(user_id, session)
-            clear_session(user_id) # 結案清空記憶
-            
-            messages = [TextSendMessage(text=f"✅ 登記成功！\n📌 分類：{final_data['category']}\n📝 描述：{final_data['description']}\n📍 地點：{final_data['location']} ({final_data['detailed_location']})")]
-            
-            try:
-                match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
-                matches = [{"doc_id": doc.id, **doc.to_dict()} for doc in match_docs]
-                
-                if matches:
-                    messages.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果："))
-                    messages.append(generate_carousel_flex(matches, "系統配對結果"))
-                else:
-                    messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
-                    messages.append(get_flex_message('contact_places.json', '聯絡據點'))
-            except Exception:
-                pass
-            line_bot_api.reply_message(reply_token, messages)
-            
-        else: # found flow
+        if item_type == "found": 
             session["step"] = "wait_dropoff_options"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, get_flex_message('dropoff.json', '預計送去哪個地點？'))
-
+        else:
+            clear_session(user_id) # 防呆機制
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="流程有誤，請重新輸入「選單」開始。"))
+            
     elif step == "wait_dropoff_options":
         if text == "其他":
             session["step"] = "wait_custom_dropoff"
@@ -353,9 +335,33 @@ def handle_postback_logic(user_id, data, reply_token):
             
         loc = params.get('loc', [''])[0]
         session["location"] = loc
-        session["step"] = "wait_detailed_location"
-        set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）"))
+        if session.get("type") == "lost":
+            session["detailed_location"] = "" # 直接給空字串
+            final_data = save_item_to_db(user_id, session)
+            clear_session(user_id) # 結案清空記憶
+            
+            messages = []
+            
+            try:
+                match_docs = db.collection('items').where('type', '==', 'found').where('category', '==', final_data['category']).where('status', '==', 'open').limit(5).stream()
+                matches = [{"doc_id": doc.id, **doc.to_dict()} for doc in match_docs]
+                
+                if matches:
+                    messages.append(TextSendMessage(text="💡 系統自動為您比對出以下可能的結果："))
+                    messages.append(generate_carousel_flex(matches, "系統配對結果"))
+                else:
+                    messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
+                    messages.append(get_flex_message('contact_places.json', '聯絡據點'))
+            except Exception:
+                pass
+            if messages:
+                line_bot_api.reply_message(reply_token, messages)
+            else:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="搜尋時發生錯誤，請稍後再試。"))
+        else:
+            session["step"] = "wait_detailed_location"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："))
         
     elif action == "claim_item":
         item_id = params.get('item_id', [''])[0]
