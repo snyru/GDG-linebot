@@ -73,24 +73,6 @@ def get_flex_message(filename, alt_text):
         contents = json.load(f)
     return FlexSendMessage(alt_text=alt_text, contents=contents)
 
-
-def get_main_menu():
-    flex_content = {
-        "type": "bubble",
-        "body": {
-            "type": "box", "layout": "vertical", "spacing": "md",
-            "contents": [
-                {"type": "text", "text": "🔍 失物招領", "weight": "bold", "size": "xl", "align": "center"},
-                {"type": "text", "text": "請選擇你的狀況", "size": "sm", "color": "#888888", "align": "center"},
-                {"type": "button", "style": "primary", "color": "#4CAF50", "action": {"type": "message", "label": "📦 我撿到東西了", "text": "我撿到東西了"}},
-                {"type": "button", "style": "primary", "color": "#2196F3", "action": {"type": "message", "label": "🔎 我在找東西", "text": "我在找東西"}},
-                {"type": "button", "style": "primary", "color": "#FF9800", "action": {"type": "message", "label": "✅ 我找到了", "text": "我找到了"}},
-                {"type": "button", "style": "secondary", "action": {"type": "message", "label": "📋 查看所有失物", "text": "查看所有失物"}},
-            ]
-        }
-    }
-    return FlexSendMessage(alt_text="失物招領選單", contents=flex_content)
-
 def get_category_menu(title="我撿到的種類"):
     flex_content = {
         "type": "bubble",
@@ -215,12 +197,6 @@ def handle_message_logic(user_id, text, reply_token):
     text = text.strip()
     session = get_session(user_id)
     step = session.get("step")
-
-    # 1. 處理主選單與強制重置
-    if text in ["選單", "開始", "取消", "menu"]:
-        clear_session(user_id)
-        line_bot_api.reply_message(reply_token, get_main_menu())
-        return
 
     if text == "查看所有失物":
         try:
