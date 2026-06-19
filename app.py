@@ -76,7 +76,6 @@ CATEGORY_CODES = {
     "其他": "08",
     "雨傘": "10",
 }
-DROP_OFF_OPTIONS = {"放置原地", "正門警衛室", "學生事務處-軍訓室", "三峽校區綜合體育館"}
 MAX_USER_TEXT_LENGTH = 500
 ADMIN_BIND_CODE = os.getenv("ADMIN_BIND_CODE")
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Taipei"))
@@ -96,14 +95,24 @@ def normalize_official_id(value):
 def get_today_code():
     return datetime.now(APP_TIMEZONE).strftime("%y%m%d")
 
+def parse_found_datetime(value):
+    parsed = datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=APP_TIMEZONE) if parsed.tzinfo is None else parsed
+
+def get_found_date_code(value):
+    try:
+        return parse_found_datetime(value).strftime("%y%m%d")
+    except (TypeError, ValueError):
+        return get_today_code()
+
 def get_category_code(category):
     return CATEGORY_CODES.get(category, CATEGORY_CODES["其他"])
 
-def generate_official_id(category):
+def generate_official_id(category, found_at=None):
     if not is_db_ready():
         raise RuntimeError("Firestore is not ready; cannot generate official ID.")
 
-    date_code = get_today_code()
+    date_code = get_found_date_code(found_at)
     category_code = get_category_code(category)
     counter_id = f"found_items_{date_code}_{category_code}"
     counter_ref = db.collection("counters").document(counter_id)
@@ -209,6 +218,40 @@ def get_flex_message(filename, alt_text):
     contents = load_flex_content(filename)
     return FlexSendMessage(alt_text=alt_text, contents=contents)
 
+def get_found_datetime_picker():
+    now = datetime.now(APP_TIMEZONE).replace(second=0, microsecond=0)
+    current_value = now.strftime("%Y-%m-%dT%H:%M")
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "選擇拾獲日期與時間", "weight": "bold", "size": "lg"},
+                {"type": "text", "text": "請選擇物品實際被拾獲的時間。", "color": "#666666", "size": "sm", "wrap": True, "margin": "md"},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "action": {
+                        "type": "datetimepicker",
+                        "label": "選擇日期與時間",
+                        "data": "action=set_found_datetime",
+                        "mode": "datetime",
+                        "initial": current_value,
+                        "max": current_value,
+                    },
+                }
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text="請選擇拾獲日期與時間", contents=contents)
+
 def get_category_menu(title="我撿到的種類"):
     flex_content = {
         "type": "bubble",
@@ -264,11 +307,6 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
             }
         }
         
-        if item.get("dropoff"):
-            bubble["body"]["contents"].append(
-                {"type": "text", "text": f"📍 目前放置於：{item['dropoff']}", "wrap": True, "size": "sm", "color": "#FF3366", "weight": "bold", "margin": "md"}
-            )
-            
         # 【修改點：圖片改為 1:1 比例，並設定 fit 模式不裁切，加上淺灰背景】
         if item.get("photo_url"):
             bubble["hero"] = {
@@ -314,24 +352,31 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
 def save_item_to_db(user_id, session):
     item_type = session.get("type")
     category = session.get("category", "未知分類")
+    found_at_value = session.get("found_at")
+    admin_profile = get_admin_profile(user_id) if item_type == "found" else None
     final_data = {
         "userId": user_id,
         "type": item_type,
         "category": category,
         "description": session.get("description", "無"),
         "location": session.get("location", "未知"),
-        "detailed_location": session.get("detailed_location", ""),
-        "dropoff": session.get("dropoff", ""),
         "photo_url": session.get("photo_url", ""),
         "status": "open",
         "timestamp": firestore.SERVER_TIMESTAMP
     }
+    if found_at_value:
+        final_data["found_at"] = parse_found_datetime(found_at_value)
+    if admin_profile:
+        final_data.update({
+            "created_by_user_id": user_id,
+            "created_by_name": admin_profile.get("name", "未命名管理員"),
+        })
     if not is_db_ready():
         logger.error("Firestore is not ready; item was not saved.")
         return final_data, False
     try:
         if item_type == "found":
-            official_id, category_code, serial_number = generate_official_id(category)
+            official_id, category_code, serial_number = generate_official_id(category, found_at_value)
             final_data.update({
                 "official_id": official_id,
                 "category_code": category_code,
@@ -348,10 +393,10 @@ def save_item_to_db(user_id, session):
 def build_saved_item_messages(final_data):
     official_id = final_data.get("official_id")
     official_id_line = f"🧾 官方編號：{official_id}\n" if official_id else ""
+    found_at = final_data.get("found_at")
+    found_at_line = f"🕒 拾獲時間：{found_at.astimezone(APP_TIMEZONE).strftime('%Y/%m/%d %H:%M')}\n" if found_at else ""
     return [
-        TextSendMessage(text=f"✅ 登記成功！\n{official_id_line}📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
-        TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
-        get_flex_message('contact_places.json', '聯絡據點')
+        TextSendMessage(text=f"✅ 拾獲物登記成功！\n{official_id_line}{found_at_line}📌 分類：{final_data['category']}\n📍 拾獲地點：{final_data['location']}\n👤 登記人員：{final_data.get('created_by_name', '未命名管理員')}")
     ]
 
 # ============ 4. 訊息與事件處理邏輯 ============
@@ -408,6 +453,11 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_admin_menu_message())
         return
 
+    if text in {"取消", "重新開始"}:
+        clear_session(user_id)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="已取消目前流程。請從圖文選單重新開始。"))
+        return
+
     session = get_session(user_id)
     step = session.get("step")
 
@@ -436,8 +486,8 @@ def handle_message_logic(user_id, text, reply_token):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="這個功能目前只開放軍訓室管理員使用。若你撿到物品，請交到軍訓室登記。"))
             return
         clear_session(user_id) # 強制清空舊記憶
-        set_session(user_id, {"type": "found", "step": "wait_category"})
-        line_bot_api.reply_message(reply_token, get_category_menu("我撿到的種類"))
+        set_session(user_id, {"type": "found", "step": "wait_found_datetime"})
+        line_bot_api.reply_message(reply_token, get_found_datetime_picker())
         return
         
     elif text == "我在找東西":
@@ -450,7 +500,10 @@ def handle_message_logic(user_id, text, reply_token):
         return
     
     # 2. 處理步驟流程 (防呆版)
-    if step == "wait_category":
+    if step == "wait_found_datetime":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕選擇拾獲日期與時間，或輸入「取消」。"))
+
+    elif step == "wait_category":
         if text in CATEGORIES:
             session["category"] = text
             if session.get("type") == "found":
@@ -468,76 +521,52 @@ def handle_message_logic(user_id, text, reply_token):
         session["description"] = text
         session["step"] = "wait_photo"
         set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳照片或略過'))
+        line_bot_api.reply_message(reply_token, get_flex_message('photo.json', '請上傳物品照片'))
 
     elif step == "wait_photo":
-        if text == "略過":
-            session["step"] = "wait_location_button"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_flex_message('find_place.json', '請選擇地點'))
-        else:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請上傳圖片，或者點擊下方按鈕選擇「略過」喔！"))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請直接上傳物品照片；照片為必填。若要中止，請輸入「取消」。"))
         
     elif step == "wait_location_button":
         line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請點擊上方的按鈕選擇地點喔！"))
-        
-    elif step == "wait_detailed_location":
-        session["detailed_location"] = text
-        item_type = session.get("type")
-        
-        if item_type == "found": 
-            session["step"] = "wait_dropoff_options"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_flex_message('dropoff.json', '預計送去哪個地點？'))
-        else:
-            clear_session(user_id) # 防呆機制
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="流程有誤，請重新輸入「選單」開始。"))
-            
-    elif step == "wait_dropoff_options":
-        if text == "其他":
-            session["step"] = "wait_custom_dropoff"
-            set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入您預計放置的詳細地點："))
-        elif text in DROP_OFF_OPTIONS:
-            session["dropoff"] = text
-            final_data, saved = save_item_to_db(user_id, session)
-            if not saved:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text="登記時發生錯誤，資料尚未保存。請稍後再試一次。"))
-                return
-            clear_session(user_id) # 結案清空記憶
 
-            messages = build_saved_item_messages(final_data)
-            line_bot_api.reply_message(reply_token, messages)
-        else:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請從上方選單選擇放置地點，或選擇「其他」喔！"))
-
-    elif step == "wait_custom_dropoff":
-        session["dropoff"] = text
-        final_data, saved = save_item_to_db(user_id, session)
-        if not saved:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="登記時發生錯誤，資料尚未保存。請稍後再試一次。"))
-            return
-        clear_session(user_id) # 結案清空記憶
-
-        messages = build_saved_item_messages(final_data)
-        line_bot_api.reply_message(reply_token, messages)
+    elif step == "wait_custom_location":
+        session["location"] = text
+        session["step"] = "wait_category"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, get_category_menu("拾獲物品種類"))
 
     else:
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入「我撿到東西了」、「我在找東西」或「查看所有失物」開始操作喔！"))
 
 # 處理按鈕回傳 (防呆版)
-def handle_postback_logic(user_id, data, reply_token):
+def handle_postback_logic(user_id, data, reply_token, postback_params=None):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
     session = get_session(user_id)
+    postback_params = postback_params or {}
 
     if not is_db_ready():
         line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
         return
     
-    if action == "set_location":
+    if action == "set_found_datetime":
+        if not is_admin(user_id) or session.get("step") != "wait_found_datetime":
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="操作順序有誤，請重新開始登記。"))
+            return
+
+        found_at = postback_params.get("datetime")
+        if not found_at:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="日期時間資料有誤，請重新選擇。"))
+            return
+
+        session["found_at"] = found_at
+        session["step"] = "wait_location_button"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, get_flex_message('find_place.json', '請選擇拾獲地點'))
+
+    elif action == "set_location":
         # [防呆重點] 如果使用者按了以前的舊按鈕，但現在根本不是選地點的步驟，直接擋下來！
-        if not session or session.get("step") not in ["wait_location_button", "wait_photo"]:
+        if not session or session.get("step") != "wait_location_button":
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 操作順序有誤！請重新輸入「選單」開啟新流程喔！"))
             return
             
@@ -545,8 +574,8 @@ def handle_postback_logic(user_id, data, reply_token):
         if not loc:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="地點資料有誤，請重新點選一次。"))
             return
-        session["location"] = loc
         if session.get("type") == "lost":
+            session["location"] = loc
             session["detailed_location"] = "" # 直接給空字串
             final_data, saved = save_item_to_db(user_id, session)
             if not saved:
@@ -572,10 +601,15 @@ def handle_postback_logic(user_id, data, reply_token):
                 line_bot_api.reply_message(reply_token, messages)
             else:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="搜尋時發生錯誤，請稍後再試。"))
-        else:
-            session["step"] = "wait_detailed_location"
+        elif loc == "其他":
+            session["step"] = "wait_custom_location"
             set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入實際拾獲地點。"))
+        else:
+            session["location"] = loc
+            session["step"] = "wait_category"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_category_menu("拾獲物品種類"))
         
     elif action == "claim_item":
         if not is_admin(user_id):
@@ -611,6 +645,11 @@ def handle_postback_logic(user_id, data, reply_token):
 def handle_image_message_logic(user_id, message_id, reply_token):
     session = get_session(user_id)
     if session.get("step") == "wait_photo":
+        if session.get("type") == "found" and not is_admin(user_id):
+            clear_session(user_id)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="你的管理權限已失效，請重新確認管理員身分。"))
+            return
+
         line_bot_api.reply_message(reply_token, TextSendMessage(text="照片上傳中，請稍候..."))
         try:
             content = line_bot_api.get_message_content(message_id)
@@ -619,9 +658,14 @@ def handle_image_message_logic(user_id, message_id, reply_token):
                 line_bot_api.push_message(user_id, TextSendMessage(text="照片上傳失敗，請稍後再試。"))
                 return
             session["photo_url"] = image_url
-            session["step"] = "wait_location_button"
-            set_session(user_id, session)
-            line_bot_api.push_message(user_id, get_flex_message('find_place.json', '請選擇地點'))
+
+            final_data, saved = save_item_to_db(user_id, session)
+            if not saved:
+                line_bot_api.push_message(user_id, TextSendMessage(text="登記時發生錯誤，資料尚未保存。請稍後重新上傳照片。"))
+                return
+
+            clear_session(user_id)
+            line_bot_api.push_message(user_id, build_saved_item_messages(final_data))
         except Exception as e:
             logger.exception("照片上傳失敗: %s", e)
             line_bot_api.push_message(user_id, TextSendMessage(text="照片上傳失敗，請稍後再試。"))
@@ -661,7 +705,7 @@ def handle_message(event):
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    handle_postback_logic(event.source.user_id, event.postback.data, event.reply_token)
+    handle_postback_logic(event.source.user_id, event.postback.data, event.reply_token, event.postback.params)
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
