@@ -270,6 +270,98 @@ def get_found_datetime_picker():
     }
     return FlexSendMessage(alt_text="請選擇拾獲日期與時間", contents=contents)
 
+def get_claim_datetime_picker():
+    now = datetime.now(APP_TIMEZONE).replace(second=0, microsecond=0)
+    current_value = now.strftime("%Y-%m-%dT%H:%M")
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "選擇領回日期與時間", "weight": "bold", "size": "lg"},
+                {"type": "text", "text": "處理人員將由目前登入的管理員自動帶入。", "color": "#666666", "size": "sm", "wrap": True, "margin": "md"},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "action": {
+                        "type": "datetimepicker",
+                        "label": "選擇日期與時間",
+                        "data": "action=set_claim_datetime",
+                        "mode": "datetime",
+                        "initial": current_value,
+                        "max": current_value,
+                    },
+                }
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text="請選擇領回日期與時間", contents=contents)
+
+def get_claim_item_confirmation(item_id, item):
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "確認領回物品", "weight": "bold", "size": "xl"},
+                {"type": "text", "text": f"官方編號：{item_id}", "weight": "bold", "color": "#3366CC", "margin": "lg"},
+                {"type": "text", "text": f"分類：{item.get('category', '未知')}", "margin": "md"},
+                {"type": "text", "text": f"拾獲地點：{item.get('location', '未知')}", "wrap": True, "margin": "sm"},
+                {"type": "text", "text": f"特徵：{item.get('description', '無')}", "wrap": True, "margin": "sm"},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "button", "style": "primary", "action": {"type": "postback", "label": "確認是這件物品", "data": f"action=confirm_claim_item&item_id={item_id}", "displayText": "確認領回此物品"}},
+                {"type": "button", "style": "secondary", "action": {"type": "message", "label": "取消", "text": "取消"}},
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text=f"確認領回物品 {item_id}", contents=contents)
+
+def get_claim_final_confirmation(session, item):
+    claim_at = parse_found_datetime(session["claim_at"]).astimezone(APP_TIMEZONE).strftime("%Y/%m/%d %H:%M")
+    note = session.get("claim_note") or "無"
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "領回資料最終確認", "weight": "bold", "size": "xl"},
+                {"type": "text", "text": f"官方編號：{session['claim_item_id']}", "weight": "bold", "color": "#3366CC", "margin": "lg"},
+                {"type": "text", "text": f"物品：{item.get('category', '未知')}／{item.get('description', '無')}", "wrap": True, "margin": "md"},
+                {"type": "text", "text": f"領回時間：{claim_at}", "wrap": True, "margin": "sm"},
+                {"type": "text", "text": f"領回者：{session['claimant_name']}", "margin": "sm"},
+                {"type": "text", "text": f"系級：{session['claimant_department']}", "margin": "sm"},
+                {"type": "text", "text": f"學號：{session['claimant_student_id']}", "margin": "sm"},
+                {"type": "text", "text": f"處理人員：{session['handled_by_name']}", "margin": "sm"},
+                {"type": "text", "text": f"備註：{note}", "wrap": True, "margin": "sm"},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "button", "style": "primary", "color": "#FF6B6E", "action": {"type": "postback", "label": "確認標記已領回", "data": "action=complete_claim", "displayText": "確認標記已領回"}},
+                {"type": "button", "style": "secondary", "action": {"type": "message", "label": "取消", "text": "取消"}},
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text="請確認領回資料", contents=contents)
+
 def get_search_menu():
     contents = {
         "type": "bubble",
@@ -451,6 +543,60 @@ def reply_search_results(reply_token, items, alt_text="遺失物查詢結果"):
         return
     line_bot_api.reply_message(reply_token, generate_carousel_flex(items, alt_text, show_claim_button=False))
 
+def get_open_item(item_id):
+    item_doc = db.collection("items").document(item_id).get()
+    if not item_doc.exists:
+        return None
+    item = item_doc.to_dict()
+    if item.get("type") != "found" or item.get("status") != "open":
+        return None
+    return {"doc_id": item_doc.id, **item}
+
+def complete_claim_record(session):
+    item_id = session["claim_item_id"]
+    item_ref = db.collection("items").document(item_id)
+    claim_ref = db.collection("claim_records").document()
+    transaction = db.transaction()
+    claim_at = parse_found_datetime(session["claim_at"])
+
+    @firestore.transactional
+    def save_claim(transaction):
+        item_doc = item_ref.get(transaction=transaction)
+        if not item_doc.exists:
+            raise ValueError("找不到物品資料")
+        item = item_doc.to_dict()
+        if item.get("type") != "found" or item.get("status") != "open":
+            raise ValueError("物品已不是未領回狀態")
+
+        claim_data = {
+            "official_id": item_id,
+            "item_category": item.get("category", "未知"),
+            "claimant_name": session["claimant_name"],
+            "claimant_department": session["claimant_department"],
+            "claimant_student_id": session["claimant_student_id"],
+            "claim_note": session.get("claim_note", ""),
+            "claimed_at": claim_at,
+            "handled_by_user_id": session["handled_by_user_id"],
+            "handled_by_name": session["handled_by_name"],
+            "recorded_at": firestore.SERVER_TIMESTAMP,
+        }
+        transaction.set(claim_ref, claim_data)
+        transaction.update(item_ref, {
+            "status": "closed",
+            "claimed_at": claim_at,
+            "claim_record_id": claim_ref.id,
+            "claimant_name": session["claimant_name"],
+            "claimant_department": session["claimant_department"],
+            "claimant_student_id": session["claimant_student_id"],
+            "handled_by_user_id": session["handled_by_user_id"],
+            "handled_by_name": session["handled_by_name"],
+            "claim_note": session.get("claim_note", ""),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+
+    save_claim(transaction)
+    return claim_ref.id
+
 # 寫入資料庫的共用函式 (確保如果有沒填到的資料，會補上空字串而不是 None)
 def save_item_to_db(user_id, session):
     item_type = session.get("type")
@@ -560,15 +706,9 @@ def handle_message_logic(user_id, text, reply_token):
         if not is_admin(user_id):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="你沒有管理權限。"))
             return
-        try:
-            items = search_open_items()
-            if not items:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有未領回的物品。"))
-            else:
-                line_bot_api.reply_message(reply_token, generate_carousel_flex(items, "選擇要標記領回的物品", show_claim_button=True))
-        except Exception as e:
-            logger.exception("讀取領回清單失敗: %s", e)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取失物列表失敗，請稍後再試。"))
+        clear_session(user_id)
+        set_session(user_id, {"type": "claim", "step": "wait_claim_official_id"})
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要辦理領回的官方編號，例如：260619-04-02。"))
         return
 
     if text in {"取消", "重新開始"}:
@@ -650,7 +790,64 @@ def handle_message_logic(user_id, text, reply_token):
         return
     
     # 2. 處理步驟流程 (防呆版)
-    if step == "wait_search_method":
+    if step == "wait_claim_official_id":
+        item_id = normalize_official_id(text)
+        try:
+            item = get_open_item(item_id)
+            if not item:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="找不到這個官方編號，或物品已經領回。請重新輸入，或輸入「取消」。"))
+                return
+            session["claim_item_id"] = item_id
+            session["step"] = "wait_claim_item_confirmation"
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_claim_item_confirmation(item_id, item))
+        except Exception as e:
+            logger.exception("讀取領回物品失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取物品資料失敗，請稍後再試。"))
+
+    elif step == "wait_claim_item_confirmation":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕確認物品，或輸入「取消」。"))
+
+    elif step == "wait_claim_datetime":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕選擇領回日期與時間，或輸入「取消」。"))
+
+    elif step == "wait_claimant_name":
+        session["claimant_name"] = text
+        session["step"] = "wait_claimant_department"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入領回者的系級，例如：資工三。"))
+
+    elif step == "wait_claimant_department":
+        session["claimant_department"] = text
+        session["step"] = "wait_claimant_student_id"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入領回者的學號。"))
+
+    elif step == "wait_claimant_student_id":
+        session["claimant_student_id"] = text
+        session["step"] = "wait_claim_note"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入領回備註；沒有備註請輸入「略過」。"))
+
+    elif step == "wait_claim_note":
+        session["claim_note"] = "" if text == "略過" else text
+        session["step"] = "wait_claim_final_confirmation"
+        set_session(user_id, session)
+        try:
+            item = get_open_item(session["claim_item_id"])
+            if not item:
+                clear_session(user_id)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="這件物品已不是未領回狀態，流程已取消。"))
+                return
+            line_bot_api.reply_message(reply_token, get_claim_final_confirmation(session, item))
+        except Exception as e:
+            logger.exception("建立領回確認畫面失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取物品資料失敗，請稍後再試。"))
+
+    elif step == "wait_claim_final_confirmation":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕完成領回，或輸入「取消」。"))
+
+    elif step == "wait_search_method":
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕選擇查詢方式，或輸入「取消」。"))
 
     elif step == "wait_search_category":
@@ -832,26 +1029,75 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="物品資料有誤，請重新選擇一次。"))
             return
         try:
-            item_ref = db.collection('items').document(item_id)
-            item_doc = item_ref.get()
-            if not item_doc.exists:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text="找不到這筆物品資料，可能已被移除。"))
-                return
-
-            item = item_doc.to_dict()
-            if item.get("status") != "open":
+            item = get_open_item(item_id)
+            if not item:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="這個物品目前已不是待領取狀態囉。"))
                 return
-
-            item_ref.update({
-                'status': 'closed',
-                'claimed_by': user_id,
-                'claimed_at': firestore.SERVER_TIMESTAMP
+            clear_session(user_id)
+            set_session(user_id, {
+                "type": "claim",
+                "step": "wait_claim_item_confirmation",
+                "claim_item_id": item_id,
             })
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="🎉 太好了！已將此物品標記為「已尋回」，它不會再顯示於列表中囉。\n\n⚠️ 請依循校方或相關單位的規定前往領取/確認喔！"))
+            line_bot_api.reply_message(reply_token, get_claim_item_confirmation(item_id, item))
         except Exception as e:
-            logger.exception("標記領回失敗: %s", e)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="Oops, 標記失敗，請稍後再試。"))
+            logger.exception("開啟領回流程失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取物品資料失敗，請稍後再試。"))
+
+    elif action == "confirm_claim_item":
+        item_id = normalize_official_id(params.get('item_id', [''])[0])
+        if not is_admin(user_id) or session.get("step") != "wait_claim_item_confirmation" or session.get("claim_item_id") != item_id:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="領回流程已失效，請重新開始。"))
+            return
+        try:
+            if not get_open_item(item_id):
+                clear_session(user_id)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="這件物品已不是未領回狀態，流程已取消。"))
+                return
+            admin_profile = get_admin_profile(user_id)
+            session.update({
+                "handled_by_user_id": user_id,
+                "handled_by_name": admin_profile.get("name", "未命名管理員"),
+                "step": "wait_claim_datetime",
+            })
+            set_session(user_id, session)
+            line_bot_api.reply_message(reply_token, get_claim_datetime_picker())
+        except Exception as e:
+            logger.exception("確認領回物品失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取物品資料失敗，請稍後再試。"))
+
+    elif action == "set_claim_datetime":
+        if not is_admin(user_id) or session.get("step") != "wait_claim_datetime":
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="領回流程已失效，請重新開始。"))
+            return
+        claim_at = postback_params.get("datetime")
+        if not claim_at:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="日期時間資料有誤，請重新選擇。"))
+            return
+        session["claim_at"] = claim_at
+        session["step"] = "wait_claimant_name"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入領回者姓名。"))
+
+    elif action == "complete_claim":
+        required_fields = {
+            "claim_item_id", "claim_at", "claimant_name", "claimant_department",
+            "claimant_student_id", "handled_by_user_id", "handled_by_name",
+        }
+        if not is_admin(user_id) or session.get("step") != "wait_claim_final_confirmation" or not required_fields.issubset(session):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="領回資料不完整，請重新開始。"))
+            return
+        try:
+            claim_record_id = complete_claim_record(session)
+            item_id = session["claim_item_id"]
+            clear_session(user_id)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"✅ 已完成領回登記！\n官方編號：{item_id}\n領回者：{session['claimant_name']}\n處理人員：{session['handled_by_name']}\n領回紀錄：{claim_record_id}"))
+        except ValueError as e:
+            clear_session(user_id)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"無法完成領回：{e}"))
+        except Exception as e:
+            logger.exception("完成領回登記失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="領回登記失敗，資料尚未變更，請稍後再試。"))
 
 def handle_image_message_logic(user_id, message_id, reply_token):
     session = get_session(user_id)
