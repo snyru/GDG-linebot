@@ -169,9 +169,27 @@ def register_admin(user_id, name):
         return False
 
 def get_admin_menu_message():
-    return TextSendMessage(
-        text="軍訓室管理功能：\n1. 輸入「我撿到東西了」登記拾獲物\n2. 在失物列表中使用物品按鈕標記已領回\n\n學生端可使用「查詢遺失物」或「查看所有遺失物」。"
-    )
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "軍訓室管理", "weight": "bold", "size": "xl", "align": "center"},
+                {"type": "text", "text": "請選擇管理功能", "color": "#666666", "size": "sm", "align": "center", "margin": "md"},
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "button", "style": "primary", "action": {"type": "message", "label": "登記拾獲物", "text": "登記拾獲物"}},
+                {"type": "button", "style": "secondary", "action": {"type": "message", "label": "遺失物領回", "text": "遺失物領回"}},
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text="軍訓室管理選單", contents=contents)
 
 def get_session(user_id):
     if not is_db_ready():
@@ -380,9 +398,9 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
                         "color": "#FF6B6E",
                         "action": {
                             "type": "postback",
-                            "label": "✋ 這是我的！",
+                            "label": "標記已領回",
                             "data": f"action=claim_item&item_id={item['doc_id']}",
-                            "displayText": "我想領回這個物品"
+                            "displayText": "標記物品已領回"
                         }
                     }
                 ]
@@ -538,6 +556,21 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_admin_menu_message())
         return
 
+    if text == "遺失物領回":
+        if not is_admin(user_id):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="你沒有管理權限。"))
+            return
+        try:
+            items = search_open_items()
+            if not items:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有未領回的物品。"))
+            else:
+                line_bot_api.reply_message(reply_token, generate_carousel_flex(items, "選擇要標記領回的物品", show_claim_button=True))
+        except Exception as e:
+            logger.exception("讀取領回清單失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取失物列表失敗，請稍後再試。"))
+        return
+
     if text in {"取消", "重新開始"}:
         clear_session(user_id)
         line_bot_api.reply_message(reply_token, TextSendMessage(text="已取消目前流程。請從圖文選單重新開始。"))
@@ -595,7 +628,7 @@ def handle_message_logic(user_id, text, reply_token):
         return
 
     # [防呆重點] 開始新流程時，強制清除舊的記憶，避免交錯！
-    if text == "我撿到東西了":
+    if text in {"我撿到東西了", "登記拾獲物"}:
         if not is_db_ready():
             line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
             return
