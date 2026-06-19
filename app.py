@@ -99,6 +99,19 @@ def parse_found_datetime(value):
     parsed = datetime.fromisoformat(value)
     return parsed.replace(tzinfo=APP_TIMEZONE) if parsed.tzinfo is None else parsed
 
+def format_item_found_at(item):
+    value = item.get("found_at") or item.get("timestamp")
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=APP_TIMEZONE)
+        return value.astimezone(APP_TIMEZONE).strftime("%Y/%m/%d %H:%M")
+    if isinstance(value, str):
+        try:
+            return parse_found_datetime(value).astimezone(APP_TIMEZONE).strftime("%Y/%m/%d %H:%M")
+        except ValueError:
+            pass
+    return "未登記"
+
 def get_found_date_code(value):
     try:
         return parse_found_datetime(value).strftime("%y%m%d")
@@ -453,6 +466,7 @@ def generate_carousel_flex(items_list, alt_text="失物列表"):
     bubbles = []
     for item in items_list[:10]:
         official_id = item.get("official_id") or item.get("doc_id", "")
+        found_at_text = format_item_found_at(item)
         bubble = {
             "type": "bubble",
             "body": {
@@ -462,7 +476,8 @@ def generate_carousel_flex(items_list, alt_text="失物列表"):
                     {"type": "text", "text": f"編號：{official_id}" if official_id else "編號：未建立", "weight": "bold", "size": "sm", "color": "#3366CC"},
                     {"type": "text", "text": item.get('category', '未知分類'), "weight": "bold", "size": "xl", "color": "#1DB446"},
                     {"type": "text", "text": f"特徵：{item.get('description', '無')}", "wrap": True, "margin": "md", "size": "sm"},
-                    {"type": "text", "text": f"掉落點：{item.get('location', '')} {item.get('detailed_location', '')}", "wrap": True, "size": "xs", "color": "#aaaaaa"}
+                    {"type": "text", "text": f"拾獲地點：{item.get('location', '')} {item.get('detailed_location', '')}", "wrap": True, "size": "xs", "color": "#777777"},
+                    {"type": "text", "text": f"拾獲時間：{found_at_text}", "wrap": True, "margin": "sm", "size": "xs", "color": "#777777"}
                 ]
             }
         }
