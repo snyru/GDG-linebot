@@ -3,7 +3,7 @@ import json
 import io
 import logging
 from functools import lru_cache
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, request, abort, jsonify
 from urllib.parse import parse_qs
@@ -170,7 +170,7 @@ def register_admin(user_id, name):
 
 def get_admin_menu_message():
     return TextSendMessage(
-        text="軍訓室管理功能：\n1. 輸入「我撿到東西了」登記拾獲物\n2. 在失物列表中使用物品按鈕標記已領回\n\n學生端仍可使用「查看所有失物」或「我在找東西」。"
+        text="軍訓室管理功能：\n1. 輸入「我撿到東西了」登記拾獲物\n2. 在失物列表中使用物品按鈕標記已領回\n\n學生端可使用「查詢遺失物」或「查看所有遺失物」。"
     )
 
 def get_session(user_id):
@@ -251,6 +251,56 @@ def get_found_datetime_picker():
         },
     }
     return FlexSendMessage(alt_text="請選擇拾獲日期與時間", contents=contents)
+
+def get_search_menu():
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "查詢遺失物", "weight": "bold", "size": "xl", "align": "center"},
+                {"type": "text", "text": "請選擇查詢方式", "color": "#666666", "size": "sm", "align": "center", "margin": "md"},
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "sm",
+                    "margin": "lg",
+                    "contents": [
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "依物品種類查詢", "text": "依物品種類查詢"}},
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "依拾獲地點查詢", "text": "依拾獲地點查詢"}},
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "依拾獲時間查詢", "text": "依拾獲時間查詢"}},
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "關鍵字搜尋", "text": "關鍵字搜尋"}},
+                    ],
+                },
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text="請選擇遺失物查詢方式", contents=contents)
+
+def get_time_search_menu():
+    contents = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "依拾獲時間查詢", "weight": "bold", "size": "lg", "align": "center"},
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "sm",
+                    "margin": "lg",
+                    "contents": [
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "今天", "text": "查詢今天"}},
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "最近 7 天", "text": "查詢最近7天"}},
+                        {"type": "button", "style": "secondary", "action": {"type": "message", "label": "最近 30 天", "text": "查詢最近30天"}},
+                    ],
+                },
+            ],
+        },
+    }
+    return FlexSendMessage(alt_text="請選擇查詢時間範圍", contents=contents)
 
 def get_category_menu(title="我撿到的種類"):
     flex_content = {
@@ -347,6 +397,41 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
         "contents": bubbles
     }
     return FlexSendMessage(alt_text=alt_text, contents=carousel)
+
+def search_open_items(category=None, location=None, keyword=None, since=None, limit=10):
+    docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(100).stream()
+    items = [{"doc_id": doc.id, **doc.to_dict()} for doc in docs]
+
+    if category:
+        items = [item for item in items if item.get("category") == category]
+    if location:
+        items = [item for item in items if item.get("location") == location]
+    if keyword:
+        normalized_keyword = keyword.casefold()
+        items = [
+            item for item in items
+            if normalized_keyword in " ".join(str(item.get(field, "")) for field in (
+                "official_id", "category", "description", "location"
+            )).casefold()
+        ]
+    if since:
+        items = [
+            item for item in items
+            if isinstance(item.get("found_at"), datetime) and item["found_at"] >= since
+        ]
+
+    def sort_timestamp(item):
+        value = item.get("found_at") or item.get("timestamp")
+        return value.timestamp() if isinstance(value, datetime) else 0
+
+    items.sort(key=sort_timestamp, reverse=True)
+    return items[:limit]
+
+def reply_search_results(reply_token, items, alt_text="遺失物查詢結果"):
+    if not items:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有找到符合條件的未領回物品。"))
+        return
+    line_bot_api.reply_message(reply_token, generate_carousel_flex(items, alt_text, show_claim_button=False))
 
 # 寫入資料庫的共用函式 (確保如果有沒填到的資料，會補上空字串而不是 None)
 def save_item_to_db(user_id, session):
@@ -461,20 +546,52 @@ def handle_message_logic(user_id, text, reply_token):
     session = get_session(user_id)
     step = session.get("step")
 
-    if text == "查看所有失物":
+    if text == "查詢遺失物":
+        if not is_db_ready():
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
+            return
+        clear_session(user_id)
+        set_session(user_id, {"type": "search", "step": "wait_search_method"})
+        line_bot_api.reply_message(reply_token, get_search_menu())
+        return
+
+    if text in {"查看所有遺失物", "查看所有失物"}:
         if not is_db_ready():
             line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
             return
         try:
-            docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(10).stream()
-            items_list = [{"doc_id": doc.id, **doc.to_dict()} for doc in docs]
-            if not items_list:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有待領取的失物喔！"))
-            else:
-                line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "失物列表", show_claim_button=False))
+            reply_search_results(reply_token, search_open_items(), "所有未領回遺失物")
         except Exception as e:
             logger.exception("讀取失物列表失敗: %s", e)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取失敗，請稍後再試。"))
+        return
+
+    if text in {"校園失物招領處", "校園失物招領處瀏覽"}:
+        line_bot_api.reply_message(reply_token, get_flex_message('contact_places.json', '校園失物招領處'))
+        return
+
+    if text == "依物品種類查詢":
+        clear_session(user_id)
+        set_session(user_id, {"type": "search", "step": "wait_search_category"})
+        line_bot_api.reply_message(reply_token, get_category_menu("要查詢的物品種類"))
+        return
+
+    if text == "依拾獲地點查詢":
+        clear_session(user_id)
+        set_session(user_id, {"type": "search", "step": "wait_location_button"})
+        line_bot_api.reply_message(reply_token, get_flex_message('find_place.json', '請選擇拾獲地點'))
+        return
+
+    if text == "依拾獲時間查詢":
+        clear_session(user_id)
+        set_session(user_id, {"type": "search", "step": "wait_search_time"})
+        line_bot_api.reply_message(reply_token, get_time_search_menu())
+        return
+
+    if text == "關鍵字搜尋":
+        clear_session(user_id)
+        set_session(user_id, {"type": "search", "step": "wait_search_keyword"})
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入物品關鍵字，例如：黑色錢包、AirPods、學生證。"))
         return
 
     # [防呆重點] 開始新流程時，強制清除舊的記憶，避免交錯！
@@ -500,7 +617,55 @@ def handle_message_logic(user_id, text, reply_token):
         return
     
     # 2. 處理步驟流程 (防呆版)
-    if step == "wait_found_datetime":
+    if step == "wait_search_method":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕選擇查詢方式，或輸入「取消」。"))
+
+    elif step == "wait_search_category":
+        if text not in CATEGORIES:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請從種類選單中選擇一個分類。"))
+            return
+        try:
+            items = search_open_items(category=text)
+            clear_session(user_id)
+            reply_search_results(reply_token, items, f"{text}查詢結果")
+        except Exception as e:
+            logger.exception("依種類查詢失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。"))
+
+    elif step == "wait_search_keyword":
+        try:
+            items = search_open_items(keyword=text)
+            clear_session(user_id)
+            reply_search_results(reply_token, items, "關鍵字查詢結果")
+        except Exception as e:
+            logger.exception("關鍵字查詢失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。"))
+
+    elif step == "wait_search_custom_location":
+        try:
+            items = search_open_items(location=text)
+            clear_session(user_id)
+            reply_search_results(reply_token, items, f"{text}查詢結果")
+        except Exception as e:
+            logger.exception("依地點查詢失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。"))
+
+    elif step == "wait_search_time":
+        day_ranges = {"查詢今天": 1, "查詢最近7天": 7, "查詢最近30天": 30}
+        if text not in day_ranges:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請從上方選單選擇查詢時間範圍。"))
+            return
+        try:
+            now = datetime.now(APP_TIMEZONE)
+            since = now.replace(hour=0, minute=0, second=0, microsecond=0) if text == "查詢今天" else now - timedelta(days=day_ranges[text])
+            items = search_open_items(since=since)
+            clear_session(user_id)
+            reply_search_results(reply_token, items, f"{text}結果")
+        except Exception as e:
+            logger.exception("依時間查詢失敗: %s", e)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。"))
+
+    elif step == "wait_found_datetime":
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕選擇拾獲日期與時間，或輸入「取消」。"))
 
     elif step == "wait_category":
@@ -536,7 +701,7 @@ def handle_message_logic(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, get_category_menu("拾獲物品種類"))
 
     else:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入「我撿到東西了」、「我在找東西」或「查看所有失物」開始操作喔！"))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請從圖文選單選擇「查詢遺失物」、「查看所有遺失物」或「校園失物招領處」。"))
 
 # 處理按鈕回傳 (防呆版)
 def handle_postback_logic(user_id, data, reply_token, postback_params=None):
@@ -574,7 +739,20 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
         if not loc:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="地點資料有誤，請重新點選一次。"))
             return
-        if session.get("type") == "lost":
+        if session.get("type") == "search":
+            if loc == "其他":
+                session["step"] = "wait_search_custom_location"
+                set_session(user_id, session)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要查詢的拾獲地點。"))
+                return
+            try:
+                items = search_open_items(location=loc)
+                clear_session(user_id)
+                reply_search_results(reply_token, items, f"{loc}查詢結果")
+            except Exception as e:
+                logger.exception("依地點查詢失敗: %s", e)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。"))
+        elif session.get("type") == "lost":
             session["location"] = loc
             session["detailed_location"] = "" # 直接給空字串
             final_data, saved = save_item_to_db(user_id, session)
