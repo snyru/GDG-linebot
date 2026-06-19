@@ -67,15 +67,15 @@ cloudinary.config(
 # ============ 2. 業務邏輯與資料庫函式 ============
 CATEGORIES = {"電子產品", "衣服", "水壺", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
 CATEGORY_CODES = {
-    "錢包": "01",
-    "證件": "02",
-    "電子產品": "03",
-    "衣服": "04",
-    "水壺": "05",
-    "書籍": "06",
-    "配飾": "07",
-    "其他": "08",
-    "雨傘": "10",
+    "錢包": "1",
+    "證件": "2",
+    "電子產品": "3",
+    "衣服": "4",
+    "水壺": "5",
+    "書籍": "6",
+    "配飾": "7",
+    "其他": "8",
+    "雨傘": "9",
 }
 MAX_USER_TEXT_LENGTH = 500
 ADMIN_BIND_CODE = os.getenv("ADMIN_BIND_CODE")
@@ -141,7 +141,7 @@ def generate_official_id(category, found_at=None):
 
     date_code = get_found_date_code(found_at)
     category_code = get_category_code(category)
-    counter_id = f"found_items_{date_code}_{category_code}"
+    counter_id = f"found_items_{date_code}_{category_code.zfill(2)}"
     counter_ref = db.collection("counters").document(counter_id)
     transaction = db.transaction()
 
@@ -720,7 +720,7 @@ def handle_message_logic(user_id, text, reply_token):
             return
         clear_session(user_id)
         set_session(user_id, {"type": "claim", "step": "wait_claim_official_id"})
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要辦理領回的官方編號，例如：2606190402。"))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要辦理領回的官方編號，例如：260619402。"))
         return
 
     if text in {"取消", "重新開始"}:
@@ -1154,7 +1154,7 @@ def health():
         "firebase_ready": is_db_ready(),
         "missing_env_vars": missing_env_vars,
         "admin_bind_code_configured": bool(ADMIN_BIND_CODE),
-        "official_id_format": "YYMMDDCCNN",
+        "official_id_format": "YYMMDDCNN",
         "category_codes": CATEGORY_CODES,
     }), 200 if is_db_ready() else 503
 
