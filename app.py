@@ -449,7 +449,7 @@ def get_category_menu(title="我撿到的種類"):
     }
     return FlexSendMessage(alt_text=f"請選擇{title}", contents=flex_content)
 
-def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_button=True):
+def generate_carousel_flex(items_list, alt_text="失物列表"):
     bubbles = []
     for item in items_list[:10]:
         official_id = item.get("official_id") or item.get("doc_id", "")
@@ -478,25 +478,6 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
                 "backgroundColor": "#f4f4f4"
             }
         
-        if show_claim_button and "doc_id" in item:
-            bubble["footer"] = {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "color": "#FF6B6E",
-                        "action": {
-                            "type": "postback",
-                            "label": "標記已領回",
-                            "data": f"action=claim_item&item_id={item['doc_id']}",
-                            "displayText": "標記物品已領回"
-                        }
-                    }
-                ]
-            }
         bubbles.append(bubble)
 
     if not bubbles:
@@ -541,7 +522,7 @@ def reply_search_results(reply_token, items, alt_text="遺失物查詢結果"):
     if not items:
         line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有找到符合條件的未領回物品。"))
         return
-    line_bot_api.reply_message(reply_token, generate_carousel_flex(items, alt_text, show_claim_button=False))
+    line_bot_api.reply_message(reply_token, generate_carousel_flex(items, alt_text))
 
 def get_open_item(item_id):
     item_doc = db.collection("items").document(item_id).get()
@@ -1023,26 +1004,11 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
         if not is_admin(user_id):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="此功能只開放軍訓室管理員使用。請至軍訓室確認領取。"))
             return
-
-        item_id = normalize_official_id(params.get('item_id', [''])[0])
-        if not item_id:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="物品資料有誤，請重新選擇一次。"))
-            return
-        try:
-            item = get_open_item(item_id)
-            if not item:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text="這個物品目前已不是待領取狀態囉。"))
-                return
-            clear_session(user_id)
-            set_session(user_id, {
-                "type": "claim",
-                "step": "wait_claim_item_confirmation",
-                "claim_item_id": item_id,
-            })
-            line_bot_api.reply_message(reply_token, get_claim_item_confirmation(item_id, item))
-        except Exception as e:
-            logger.exception("開啟領回流程失敗: %s", e)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取物品資料失敗，請稍後再試。"))
+        clear_session(user_id)
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="這是舊版按鈕，已停止使用。請輸入「軍訓室管理」，再選擇「遺失物領回」重新開始。")
+        )
 
     elif action == "confirm_claim_item":
         item_id = normalize_official_id(params.get('item_id', [''])[0])
