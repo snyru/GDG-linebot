@@ -91,7 +91,16 @@ def is_text_too_long(text):
     return len(text) > MAX_USER_TEXT_LENGTH
 
 def normalize_official_id(value):
-    return (value or "").strip().upper()
+    return re.sub(r"[-\s]", "", (value or "").strip().upper())
+
+def get_official_id_candidates(value):
+    compact_id = normalize_official_id(value)
+    candidates = [compact_id] if compact_id else []
+    if len(compact_id) >= 10:
+        legacy_id = f"{compact_id[:6]}-{compact_id[6:8]}-{compact_id[8:]}"
+        if legacy_id not in candidates:
+            candidates.append(legacy_id)
+    return candidates
 
 def parse_claimant_info(value):
     parts = [part.strip() for part in re.split(r"\s*[,，/／]\s*|\s+", value.strip()) if part.strip()]
@@ -150,7 +159,7 @@ def generate_official_id(category, found_at=None):
         return next_number
 
     serial_number = increment_counter(transaction, counter_ref)
-    return f"{date_code}-{category_code}-{serial_number:02d}", category_code, serial_number
+    return f"{date_code}{category_code}{serial_number:02d}", category_code, serial_number
 
 def get_admin_profile(user_id):
     if not is_db_ready():
@@ -323,6 +332,7 @@ def get_claim_datetime_picker():
     return FlexSendMessage(alt_text="請選擇領回日期與時間", contents=contents)
 
 def get_claim_item_confirmation(item_id, item):
+    display_item_id = normalize_official_id(item_id)
     contents = {
         "type": "bubble",
         "body": {
@@ -330,7 +340,7 @@ def get_claim_item_confirmation(item_id, item):
             "layout": "vertical",
             "contents": [
                 {"type": "text", "text": "確認領回物品", "weight": "bold", "size": "xl"},
-                {"type": "text", "text": f"官方編號：{item_id}", "weight": "bold", "color": "#3366CC", "margin": "lg"},
+                {"type": "text", "text": f"官方編號：{display_item_id}", "weight": "bold", "color": "#3366CC", "margin": "lg"},
                 {"type": "text", "text": f"分類：{item.get('category', '未知')}", "margin": "md"},
                 {"type": "text", "text": f"拾獲地點：{item.get('location', '未知')}", "wrap": True, "margin": "sm"},
                 {"type": "text", "text": f"特徵：{item.get('description', '無')}", "wrap": True, "margin": "sm"},
@@ -346,7 +356,7 @@ def get_claim_item_confirmation(item_id, item):
             ],
         },
     }
-    return FlexSendMessage(alt_text=f"確認領回物品 {item_id}", contents=contents)
+    return FlexSendMessage(alt_text=f"確認領回物品 {display_item_id}", contents=contents)
 
 def get_claim_final_confirmation(session, item):
     claim_at = parse_found_datetime(session["claim_at"]).astimezone(APP_TIMEZONE).strftime("%Y/%m/%d %H:%M")
@@ -358,7 +368,7 @@ def get_claim_final_confirmation(session, item):
             "layout": "vertical",
             "contents": [
                 {"type": "text", "text": "領回資料最終確認", "weight": "bold", "size": "xl"},
-                {"type": "text", "text": f"官方編號：{session['claim_item_id']}", "weight": "bold", "color": "#3366CC", "margin": "lg"},
+                {"type": "text", "text": f"官方編號：{normalize_official_id(session['claim_item_id'])}", "weight": "bold", "color": "#3366CC", "margin": "lg"},
                 {"type": "text", "text": f"物品：{item.get('category', '未知')}／{item.get('description', '無')}", "wrap": True, "margin": "md"},
                 {"type": "text", "text": f"領回時間：{claim_at}", "wrap": True, "margin": "sm"},
                 {"type": "text", "text": f"領回者：{session['claimant_name']}", "margin": "sm"},
@@ -470,7 +480,7 @@ def get_category_menu(title="我撿到的種類"):
 def generate_carousel_flex(items_list, alt_text="失物列表"):
     bubbles = []
     for item in items_list[:10]:
-        official_id = item.get("official_id") or item.get("doc_id", "")
+        official_id = normalize_official_id(item.get("official_id") or item.get("doc_id", ""))
         found_at_text = format_item_found_at(item)
         bubble = {
             "type": "bubble",
@@ -545,13 +555,14 @@ def reply_search_results(reply_token, items, alt_text="遺失物查詢結果"):
     line_bot_api.reply_message(reply_token, generate_carousel_flex(items, alt_text))
 
 def get_open_item(item_id):
-    item_doc = db.collection("items").document(item_id).get()
-    if not item_doc.exists:
-        return None
-    item = item_doc.to_dict()
-    if item.get("type") != "found" or item.get("status") != "open":
-        return None
-    return {"doc_id": item_doc.id, **item}
+    for candidate in get_official_id_candidates(item_id):
+        item_doc = db.collection("items").document(candidate).get()
+        if not item_doc.exists:
+            continue
+        item = item_doc.to_dict()
+        if item.get("type") == "found" and item.get("status") == "open":
+            return {"doc_id": item_doc.id, **item}
+    return None
 
 def complete_claim_record(session):
     item_id = session["claim_item_id"]
@@ -709,7 +720,7 @@ def handle_message_logic(user_id, text, reply_token):
             return
         clear_session(user_id)
         set_session(user_id, {"type": "claim", "step": "wait_claim_official_id"})
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要辦理領回的官方編號，例如：260619-04-02。"))
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要辦理領回的官方編號，例如：2606190402。"))
         return
 
     if text in {"取消", "重新開始"}:
@@ -798,10 +809,10 @@ def handle_message_logic(user_id, text, reply_token):
             if not item:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="找不到這個官方編號，或物品已經領回。請重新輸入，或輸入「取消」。"))
                 return
-            session["claim_item_id"] = item_id
+            session["claim_item_id"] = item["doc_id"]
             session["step"] = "wait_claim_item_confirmation"
             set_session(user_id, session)
-            line_bot_api.reply_message(reply_token, get_claim_item_confirmation(item_id, item))
+            line_bot_api.reply_message(reply_token, get_claim_item_confirmation(item["doc_id"], item))
         except Exception as e:
             logger.exception("讀取領回物品失敗: %s", e)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取物品資料失敗，請稍後再試。"))
@@ -1045,11 +1056,11 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
 
     elif action == "confirm_claim_item":
         item_id = normalize_official_id(params.get('item_id', [''])[0])
-        if not is_admin(user_id) or session.get("step") != "wait_claim_item_confirmation" or session.get("claim_item_id") != item_id:
+        if not is_admin(user_id) or session.get("step") != "wait_claim_item_confirmation" or normalize_official_id(session.get("claim_item_id")) != item_id:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="領回流程已失效，請重新開始。"))
             return
         try:
-            if not get_open_item(item_id):
+            if not get_open_item(session["claim_item_id"]):
                 clear_session(user_id)
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="這件物品已不是未領回狀態，流程已取消。"))
                 return
@@ -1093,7 +1104,7 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
             claim_record_id = complete_claim_record(session)
             item_id = session["claim_item_id"]
             clear_session(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"✅ 已完成領回登記！\n官方編號：{item_id}\n領回者：{session['claimant_name']}\n處理人員：{session['handled_by_name']}\n領回紀錄：{claim_record_id}"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"✅ 已完成領回登記！\n官方編號：{normalize_official_id(item_id)}\n領回者：{session['claimant_name']}\n處理人員：{session['handled_by_name']}\n領回紀錄：{claim_record_id}"))
         except ValueError as e:
             clear_session(user_id)
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"無法完成領回：{e}"))
@@ -1143,7 +1154,7 @@ def health():
         "firebase_ready": is_db_ready(),
         "missing_env_vars": missing_env_vars,
         "admin_bind_code_configured": bool(ADMIN_BIND_CODE),
-        "official_id_format": "YYMMDD-CC-NN",
+        "official_id_format": "YYMMDDCCNN",
         "category_codes": CATEGORY_CODES,
     }), 200 if is_db_ready() else 503
 
