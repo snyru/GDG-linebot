@@ -1,7 +1,11 @@
 import os
 import json
 import io
-from flask import Flask, request, abort
+import logging
+from functools import lru_cache
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from flask import Flask, request, abort, jsonify
 from urllib.parse import parse_qs
 
 # LINE SDK
@@ -18,10 +22,26 @@ import cloudinary
 import cloudinary.uploader
 
 # ============ 1. 伺服器與第三方服務初始化 ============
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 
-line_bot_api = LineBotApi(os.getenv('LINE_TOKEN'))
-handler = WebhookHandler(os.getenv('LINE_SECRET'))
+REQUIRED_ENV_VARS = [
+    "LINE_TOKEN",
+    "LINE_SECRET",
+    "FIREBASE_CREDENTIALS",
+    "CLOUDINARY_CLOUD_NAME",
+    "CLOUDINARY_API_KEY",
+    "CLOUDINARY_API_SECRET",
+]
+missing_env_vars = [name for name in REQUIRED_ENV_VARS if not os.getenv(name)]
+if missing_env_vars:
+    logger.warning("Missing environment variables: %s", ", ".join(missing_env_vars))
+
+line_bot_api = LineBotApi(os.getenv("LINE_TOKEN"))
+handler = WebhookHandler(os.getenv("LINE_SECRET"))
+db = None
 
 firebase_cert = os.getenv("FIREBASE_CREDENTIALS")
 if firebase_cert:
@@ -32,9 +52,9 @@ if firebase_cert:
             firebase_admin.initialize_app(cred)
         db = firestore.client()
     except Exception as e:
-        print(f"Firebase 初始化失敗: {e}")
+        logger.exception("Firebase 初始化失敗: %s", e)
 else:
-    print("尚未設定 FIREBASE_CREDENTIALS 環境變數！")
+    logger.warning("尚未設定 FIREBASE_CREDENTIALS 環境變數！")
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -45,32 +65,148 @@ cloudinary.config(
 
 # ============ 2. 業務邏輯與資料庫函式 ============
 CATEGORIES = {"電子產品", "衣服", "鞋子", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
+CATEGORY_CODES = {
+    "錢包": "01",
+    "證件": "02",
+    "電子產品": "03",
+    "衣服": "04",
+    "鞋子": "05",
+    "書籍": "06",
+    "配飾": "07",
+    "其他": "08",
+    "雨傘": "10",
+}
+DROP_OFF_OPTIONS = {"放置原地", "正門警衛室", "學生事務處-軍訓室", "三峽校區綜合體育館"}
+MAX_USER_TEXT_LENGTH = 500
+ADMIN_BIND_CODE = os.getenv("ADMIN_BIND_CODE")
+APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Taipei"))
+
+def is_db_ready():
+    return db is not None
+
+def normalize_user_text(text):
+    return (text or "").strip()
+
+def is_text_too_long(text):
+    return len(text) > MAX_USER_TEXT_LENGTH
+
+def normalize_official_id(value):
+    return (value or "").strip().upper()
+
+def get_today_code():
+    return datetime.now(APP_TIMEZONE).strftime("%y%m%d")
+
+def get_category_code(category):
+    return CATEGORY_CODES.get(category, CATEGORY_CODES["其他"])
+
+def generate_official_id(category):
+    if not is_db_ready():
+        raise RuntimeError("Firestore is not ready; cannot generate official ID.")
+
+    date_code = get_today_code()
+    category_code = get_category_code(category)
+    counter_id = f"found_items_{date_code}_{category_code}"
+    counter_ref = db.collection("counters").document(counter_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def increment_counter(transaction, ref):
+        snapshot = ref.get(transaction=transaction)
+        last_number = snapshot.to_dict().get("last_number", 0) if snapshot.exists else 0
+        next_number = last_number + 1
+        transaction.set(ref, {
+            "date": date_code,
+            "category_code": category_code,
+            "last_number": next_number,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        return next_number
+
+    serial_number = increment_counter(transaction, counter_ref)
+    return f"{date_code}-{category_code}-{serial_number:02d}", category_code, serial_number
+
+def get_admin_profile(user_id):
+    if not is_db_ready():
+        logger.error("Firestore is not ready; cannot get admin profile.")
+        return None
+    try:
+        doc = db.collection("admin_users").document(user_id).get()
+        if not doc.exists:
+            return None
+        profile = doc.to_dict()
+        return profile if profile.get("active") is True else None
+    except Exception as e:
+        logger.exception("讀取管理員資料失敗: %s", e)
+        return None
+
+def is_admin(user_id):
+    return get_admin_profile(user_id) is not None
+
+def register_admin(user_id, name):
+    if not is_db_ready():
+        logger.error("Firestore is not ready; cannot register admin.")
+        return False
+    try:
+        db.collection("admin_users").document(user_id).set({
+            "name": name or "未命名管理員",
+            "role": "staff",
+            "active": True,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        return True
+    except Exception as e:
+        logger.exception("綁定管理員失敗: %s", e)
+        return False
+
+def get_admin_menu_message():
+    return TextSendMessage(
+        text="軍訓室管理功能：\n1. 輸入「我撿到東西了」登記拾獲物\n2. 在失物列表中使用物品按鈕標記已領回\n\n學生端仍可使用「查看所有失物」或「我在找東西」。"
+    )
 
 def get_session(user_id):
+    if not is_db_ready():
+        logger.error("Firestore is not ready; cannot get session.")
+        return {}
     try:
         doc_ref = db.collection('sessions').document(user_id)
         doc = doc_ref.get()
         return doc.to_dict() if doc.exists else {}
     except Exception as e:
+        logger.exception("讀取 session 失敗: %s", e)
         return {}
 
 def set_session(user_id, data):
+    if not is_db_ready():
+        logger.error("Firestore is not ready; cannot set session.")
+        return False
     try:
         db.collection('sessions').document(user_id).set(data, merge=True)
+        return True
     except Exception as e:
-        pass
+        logger.exception("寫入 session 失敗: %s", e)
+        return False
 
 def clear_session(user_id):
+    if not is_db_ready():
+        logger.error("Firestore is not ready; cannot clear session.")
+        return False
     try:
         db.collection('sessions').document(user_id).delete()
+        return True
     except Exception as e:
-        pass
+        logger.exception("清除 session 失敗: %s", e)
+        return False
 
 # ============ 3. Flex Message 生成 ============
-def get_flex_message(filename, alt_text):
+@lru_cache(maxsize=16)
+def load_flex_content(filename):
     file_path = os.path.join(os.path.dirname(__file__), filename)
-    with open(file_path, 'r', encoding='utf-8') as f:
-        contents = json.load(f)
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_flex_message(filename, alt_text):
+    contents = load_flex_content(filename)
     return FlexSendMessage(alt_text=alt_text, contents=contents)
 
 def get_category_menu(title="我撿到的種類"):
@@ -112,13 +248,15 @@ def get_category_menu(title="我撿到的種類"):
 
 def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_button=True):
     bubbles = []
-    for item in items_list:
+    for item in items_list[:10]:
+        official_id = item.get("official_id") or item.get("doc_id", "")
         bubble = {
             "type": "bubble",
             "body": {
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
+                    {"type": "text", "text": f"編號：{official_id}" if official_id else "編號：未建立", "weight": "bold", "size": "sm", "color": "#3366CC"},
                     {"type": "text", "text": item.get('category', '未知分類'), "weight": "bold", "size": "xl", "color": "#1DB446"},
                     {"type": "text", "text": f"特徵：{item.get('description', '無')}", "wrap": True, "margin": "md", "size": "sm"},
                     {"type": "text", "text": f"掉落點：{item.get('location', '')} {item.get('detailed_location', '')}", "wrap": True, "size": "xs", "color": "#aaaaaa"}
@@ -174,10 +312,12 @@ def generate_carousel_flex(items_list, alt_text="失物列表", show_claim_butto
 
 # 寫入資料庫的共用函式 (確保如果有沒填到的資料，會補上空字串而不是 None)
 def save_item_to_db(user_id, session):
+    item_type = session.get("type")
+    category = session.get("category", "未知分類")
     final_data = {
         "userId": user_id,
-        "type": session.get("type"),
-        "category": session.get("category", "未知分類"),
+        "type": item_type,
+        "category": category,
         "description": session.get("description", "無"),
         "location": session.get("location", "未知"),
         "detailed_location": session.get("detailed_location", ""),
@@ -186,19 +326,95 @@ def save_item_to_db(user_id, session):
         "status": "open",
         "timestamp": firestore.SERVER_TIMESTAMP
     }
+    if not is_db_ready():
+        logger.error("Firestore is not ready; item was not saved.")
+        return final_data, False
     try:
-        db.collection('items').add(final_data)
+        if item_type == "found":
+            official_id, category_code, serial_number = generate_official_id(category)
+            final_data.update({
+                "official_id": official_id,
+                "category_code": category_code,
+                "serial_number": serial_number,
+            })
+            db.collection('items').document(official_id).set(final_data)
+        else:
+            db.collection('items').add(final_data)
+        return final_data, True
     except Exception as e:
-        print(f"寫入 items 失敗: {e}")
-    return final_data
+        logger.exception("寫入 items 失敗: %s", e)
+        return final_data, False
+
+def build_saved_item_messages(final_data):
+    official_id = final_data.get("official_id")
+    official_id_line = f"🧾 官方編號：{official_id}\n" if official_id else ""
+    return [
+        TextSendMessage(text=f"✅ 登記成功！\n{official_id_line}📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
+        TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
+        get_flex_message('contact_places.json', '聯絡據點')
+    ]
 
 # ============ 4. 訊息與事件處理邏輯 ============
 def handle_message_logic(user_id, text, reply_token):
-    text = text.strip()
+    text = normalize_user_text(text)
+    if not text:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入文字，或點選選單按鈕開始操作喔！"))
+        return
+    if is_text_too_long(text):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"內容有點太長了，請控制在 {MAX_USER_TEXT_LENGTH} 字以內喔！"))
+        return
+
+    if text in {"我的ID", "我的 LINE ID", "我的LineID"}:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE user ID 是：\n{user_id}"))
+        return
+
+    if text.startswith("綁定管理員"):
+        if not is_db_ready():
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
+            return
+        if not ADMIN_BIND_CODE:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="尚未設定管理員綁定碼，請先在部署環境設定 ADMIN_BIND_CODE。"))
+            return
+
+        parts = text.split(maxsplit=2)
+        if len(parts) < 2:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入：綁定管理員 管理碼 姓名\n例如：綁定管理員 123456 王教官"))
+            return
+
+        code = parts[1]
+        name = parts[2] if len(parts) >= 3 else ""
+        if code != ADMIN_BIND_CODE:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="管理碼不正確，無法綁定。"))
+            return
+
+        if register_admin(user_id, name):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="管理員綁定成功。之後這個 LINE 帳號可以使用軍訓室管理功能。"))
+        else:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="管理員綁定失敗，請稍後再試。"))
+        return
+
+    if text == "管理員狀態":
+        profile = get_admin_profile(user_id)
+        if profile:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你目前是管理員。\n名稱：{profile.get('name', '未命名管理員')}\n角色：{profile.get('role', 'staff')}"))
+        else:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="你目前不是管理員。"))
+        return
+
+    if text == "軍訓室管理":
+        if not is_admin(user_id):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="你沒有管理權限。若你是軍訓室人員，請先完成管理員綁定。"))
+            return
+        line_bot_api.reply_message(reply_token, get_admin_menu_message())
+        return
+
     session = get_session(user_id)
     step = session.get("step")
 
     if text == "查看所有失物":
+        if not is_db_ready():
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
+            return
         try:
             docs = db.collection('items').where('type', '==', 'found').where('status', '==', 'open').limit(10).stream()
             items_list = [{"doc_id": doc.id, **doc.to_dict()} for doc in docs]
@@ -206,18 +422,28 @@ def handle_message_logic(user_id, text, reply_token):
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有待領取的失物喔！"))
             else:
                 line_bot_api.reply_message(reply_token, generate_carousel_flex(items_list, "失物列表", show_claim_button=False))
-        except Exception:
+        except Exception as e:
+            logger.exception("讀取失物列表失敗: %s", e)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="讀取失敗，請稍後再試。"))
         return
 
     # [防呆重點] 開始新流程時，強制清除舊的記憶，避免交錯！
     if text == "我撿到東西了":
+        if not is_db_ready():
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
+            return
+        if not is_admin(user_id):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="這個功能目前只開放軍訓室管理員使用。若你撿到物品，請交到軍訓室登記。"))
+            return
         clear_session(user_id) # 強制清空舊記憶
         set_session(user_id, {"type": "found", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我撿到的種類"))
         return
         
     elif text == "我在找東西":
+        if not is_db_ready():
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
+            return
         clear_session(user_id) # 強制清空舊記憶
         set_session(user_id, {"type": "lost", "step": "wait_category"})
         line_bot_api.reply_message(reply_token, get_category_menu("我在找的東西的種類"))
@@ -272,37 +498,42 @@ def handle_message_logic(user_id, text, reply_token):
             session["step"] = "wait_custom_dropoff"
             set_session(user_id, session)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入您預計放置的詳細地點："))
-        elif text in ["放置原地", "正門警衛室", "學生事務處-軍訓室", "三峽校區綜合體育館"]:
+        elif text in DROP_OFF_OPTIONS:
             session["dropoff"] = text
-            final_data = save_item_to_db(user_id, session)
+            final_data, saved = save_item_to_db(user_id, session)
+            if not saved:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="登記時發生錯誤，資料尚未保存。請稍後再試一次。"))
+                return
             clear_session(user_id) # 結案清空記憶
-            
-            messages = [
-                TextSendMessage(text=f"✅ 登記成功！感謝您的熱心！\n📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
-                TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
-                get_flex_message('contact_places.json', '聯絡據點')
-            ]
+
+            messages = build_saved_item_messages(final_data)
             line_bot_api.reply_message(reply_token, messages)
         else:
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 請從上方選單選擇放置地點，或選擇「其他」喔！"))
 
     elif step == "wait_custom_dropoff":
         session["dropoff"] = text
-        final_data = save_item_to_db(user_id, session)
+        final_data, saved = save_item_to_db(user_id, session)
+        if not saved:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="登記時發生錯誤，資料尚未保存。請稍後再試一次。"))
+            return
         clear_session(user_id) # 結案清空記憶
-        
-        messages = [
-            TextSendMessage(text=f"✅ 登記成功！感謝您的熱心！\n📌 分類：{final_data['category']}\n📍 發現地：{final_data['location']} ({final_data['detailed_location']})\n🏫 放置於：{final_data['dropoff']}"),
-            TextSendMessage(text="以下提供校方的失物招領通報據點資訊給您參考👇"),
-            get_flex_message('contact_places.json', '聯絡據點')
-        ]
+
+        messages = build_saved_item_messages(final_data)
         line_bot_api.reply_message(reply_token, messages)
+
+    else:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入「我撿到東西了」、「我在找東西」或「查看所有失物」開始操作喔！"))
 
 # 處理按鈕回傳 (防呆版)
 def handle_postback_logic(user_id, data, reply_token):
     params = parse_qs(data)
     action = params.get('action', [''])[0]
     session = get_session(user_id)
+
+    if not is_db_ready():
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="資料庫暫時無法連線，請稍後再試。"))
+        return
     
     if action == "set_location":
         # [防呆重點] 如果使用者按了以前的舊按鈕，但現在根本不是選地點的步驟，直接擋下來！
@@ -311,10 +542,16 @@ def handle_postback_logic(user_id, data, reply_token):
             return
             
         loc = params.get('loc', [''])[0]
+        if not loc:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="地點資料有誤，請重新點選一次。"))
+            return
         session["location"] = loc
         if session.get("type") == "lost":
             session["detailed_location"] = "" # 直接給空字串
-            final_data = save_item_to_db(user_id, session)
+            final_data, saved = save_item_to_db(user_id, session)
+            if not saved:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="登記時發生錯誤，資料尚未保存。請稍後再試一次。"))
+                return
             clear_session(user_id) # 結案清空記憶
             
             messages = []
@@ -329,8 +566,8 @@ def handle_postback_logic(user_id, data, reply_token):
                 else:
                     messages.append(TextSendMessage(text="系統目前尚未配對到符合的物品。您可以直接聯繫下方學校單位詢問，或隨時回來查看喔！👇"))
                     messages.append(get_flex_message('contact_places.json', '聯絡據點'))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception("自動配對失敗: %s", e)
             if messages:
                 line_bot_api.reply_message(reply_token, messages)
             else:
@@ -341,11 +578,34 @@ def handle_postback_logic(user_id, data, reply_token):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"已選擇：{loc}\n請輸入更詳細的位置描述（例如：二樓靠近窗戶的座位、大門口右側等）："))
         
     elif action == "claim_item":
-        item_id = params.get('item_id', [''])[0]
+        if not is_admin(user_id):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="此功能只開放軍訓室管理員使用。請至軍訓室確認領取。"))
+            return
+
+        item_id = normalize_official_id(params.get('item_id', [''])[0])
+        if not item_id:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="物品資料有誤，請重新選擇一次。"))
+            return
         try:
-            db.collection('items').document(item_id).update({'status': 'closed'})
+            item_ref = db.collection('items').document(item_id)
+            item_doc = item_ref.get()
+            if not item_doc.exists:
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="找不到這筆物品資料，可能已被移除。"))
+                return
+
+            item = item_doc.to_dict()
+            if item.get("status") != "open":
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="這個物品目前已不是待領取狀態囉。"))
+                return
+
+            item_ref.update({
+                'status': 'closed',
+                'claimed_by': user_id,
+                'claimed_at': firestore.SERVER_TIMESTAMP
+            })
             line_bot_api.reply_message(reply_token, TextSendMessage(text="🎉 太好了！已將此物品標記為「已尋回」，它不會再顯示於列表中囉。\n\n⚠️ 請依循校方或相關單位的規定前往領取/確認喔！"))
-        except Exception:
+        except Exception as e:
+            logger.exception("標記領回失敗: %s", e)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="Oops, 標記失敗，請稍後再試。"))
 
 def handle_image_message_logic(user_id, message_id, reply_token):
@@ -355,11 +615,15 @@ def handle_image_message_logic(user_id, message_id, reply_token):
         try:
             content = line_bot_api.get_message_content(message_id)
             image_url = cloudinary.uploader.upload(io.BytesIO(b''.join(content.iter_content()))).get("secure_url")
+            if not image_url:
+                line_bot_api.push_message(user_id, TextSendMessage(text="照片上傳失敗，請稍後再試。"))
+                return
             session["photo_url"] = image_url
             session["step"] = "wait_location_button"
             set_session(user_id, session)
             line_bot_api.push_message(user_id, get_flex_message('find_place.json', '請選擇地點'))
-        except Exception:
+        except Exception as e:
+            logger.exception("照片上傳失敗: %s", e)
             line_bot_api.push_message(user_id, TextSendMessage(text="照片上傳失敗，請稍後再試。"))
     else:
         line_bot_api.reply_message(reply_token, TextSendMessage(text="目前不需要傳送照片喔！"))
@@ -369,10 +633,24 @@ def handle_image_message_logic(user_id, message_id, reply_token):
 def index():
     return "Bot is running!"
 
+@app.route("/health", methods=['GET'])
+def health():
+    return jsonify({
+        "status": "ok" if is_db_ready() else "degraded",
+        "firebase_ready": is_db_ready(),
+        "missing_env_vars": missing_env_vars,
+        "admin_bind_code_configured": bool(ADMIN_BIND_CODE),
+        "official_id_format": "YYMMDD-CC-NN",
+        "category_codes": CATEGORY_CODES,
+    }), 200 if is_db_ready() else 503
+
 @app.route("/callback", methods=['POST'])
 def callback():
     try:
-        handler.handle(request.get_data(as_text=True), request.headers['X-Line-Signature'])
+        signature = request.headers.get('X-Line-Signature')
+        if not signature:
+            abort(400)
+        handler.handle(request.get_data(as_text=True), signature)
     except InvalidSignatureError:
         abort(400)
     return 'OK'
