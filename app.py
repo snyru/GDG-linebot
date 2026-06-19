@@ -881,7 +881,6 @@ def handle_message_logic(user_id, text, reply_token):
             return
         try:
             items = search_open_items(category=text)
-            clear_session(user_id)
             reply_search_results(reply_token, items, f"{text}查詢結果")
         except Exception as e:
             logger.exception("依種類查詢失敗: %s", e)
@@ -890,7 +889,6 @@ def handle_message_logic(user_id, text, reply_token):
     elif step == "wait_search_keyword":
         try:
             items = search_open_items(keyword=text)
-            clear_session(user_id)
             reply_search_results(reply_token, items, "關鍵字查詢結果")
         except Exception as e:
             logger.exception("關鍵字查詢失敗: %s", e)
@@ -899,7 +897,6 @@ def handle_message_logic(user_id, text, reply_token):
     elif step == "wait_search_custom_location":
         try:
             items = search_open_items(location=text)
-            clear_session(user_id)
             reply_search_results(reply_token, items, f"{text}查詢結果")
         except Exception as e:
             logger.exception("依地點查詢失敗: %s", e)
@@ -914,7 +911,6 @@ def handle_message_logic(user_id, text, reply_token):
             now = datetime.now(APP_TIMEZONE)
             since = now.replace(hour=0, minute=0, second=0, microsecond=0) if text == "查詢今天" else now - timedelta(days=day_ranges[text])
             items = search_open_items(since=since)
-            clear_session(user_id)
             reply_search_results(reply_token, items, f"{text}結果")
         except Exception as e:
             logger.exception("依時間查詢失敗: %s", e)
@@ -986,7 +982,8 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
 
     elif action == "set_location":
         # [防呆重點] 如果使用者按了以前的舊按鈕，但現在根本不是選地點的步驟，直接擋下來！
-        if not session or session.get("step") != "wait_location_button":
+        valid_search_step = session.get("type") == "search" and session.get("step") in {"wait_location_button", "wait_search_custom_location"}
+        if not session or (session.get("step") != "wait_location_button" and not valid_search_step):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ 操作順序有誤！請重新輸入「選單」開啟新流程喔！"))
             return
             
@@ -1001,8 +998,9 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入要查詢的拾獲地點。"))
                 return
             try:
+                session["step"] = "wait_location_button"
+                set_session(user_id, session)
                 items = search_open_items(location=loc)
-                clear_session(user_id)
                 reply_search_results(reply_token, items, f"{loc}查詢結果")
             except Exception as e:
                 logger.exception("依地點查詢失敗: %s", e)
