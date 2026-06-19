@@ -64,13 +64,13 @@ cloudinary.config(
 )
 
 # ============ 2. 業務邏輯與資料庫函式 ============
-CATEGORIES = {"電子產品", "衣服", "鞋子", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
+CATEGORIES = {"電子產品", "衣服", "水壺", "證件", "錢包", "雨傘", "書籍", "其他", "配飾"}
 CATEGORY_CODES = {
     "錢包": "01",
     "證件": "02",
     "電子產品": "03",
     "衣服": "04",
-    "鞋子": "05",
+    "水壺": "05",
     "書籍": "06",
     "配飾": "07",
     "其他": "08",
@@ -441,7 +441,7 @@ def get_category_menu(title="我撿到的種類"):
                          {"type": "button", "style": "secondary", "action": {"type": "message", "label": "衣服", "text": "衣服"}}
                      ]},
                      {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
-                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "鞋子", "text": "鞋子"}},
+                         {"type": "button", "style": "secondary", "action": {"type": "message", "label": "水壺", "text": "水壺"}},
                          {"type": "button", "style": "secondary", "action": {"type": "message", "label": "證件", "text": "證件"}}
                      ]},
                      {"type": "box", "layout": "horizontal", "spacing": "md", "contents": [
