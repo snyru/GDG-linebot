@@ -2,6 +2,7 @@ import os
 import json
 import io
 import logging
+import re
 from functools import lru_cache
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -91,6 +92,10 @@ def is_text_too_long(text):
 
 def normalize_official_id(value):
     return (value or "").strip().upper()
+
+def parse_claimant_info(value):
+    parts = [part.strip() for part in re.split(r"\s*[,，/／]\s*|\s+", value.strip()) if part.strip()]
+    return tuple(parts) if len(parts) == 3 else None
 
 def get_today_code():
     return datetime.now(APP_TIMEZONE).strftime("%y%m%d")
@@ -807,6 +812,19 @@ def handle_message_logic(user_id, text, reply_token):
     elif step == "wait_claim_datetime":
         line_bot_api.reply_message(reply_token, TextSendMessage(text="請點擊上方按鈕選擇領回日期與時間，或輸入「取消」。"))
 
+    elif step == "wait_claimant_info":
+        claimant_info = parse_claimant_info(text)
+        if not claimant_info:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="格式不正確，請依序輸入「姓名 系級 學號」。\n例如：孫運璿 資工三 61836193")
+            )
+            return
+        session["claimant_name"], session["claimant_department"], session["claimant_student_id"] = claimant_info
+        session["step"] = "wait_claim_note"
+        set_session(user_id, session)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入領回備註；沒有備註請輸入「略過」。"))
+
     elif step == "wait_claimant_name":
         session["claimant_name"] = text
         session["step"] = "wait_claimant_department"
@@ -1056,9 +1074,12 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="日期時間資料有誤，請重新選擇。"))
             return
         session["claim_at"] = claim_at
-        session["step"] = "wait_claimant_name"
+        session["step"] = "wait_claimant_info"
         set_session(user_id, session)
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="請輸入領回者姓名。"))
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="請一次輸入領回者的姓名、系級與學號。\n格式：姓名 系級 學號\n例如：孫運璿 資工三 61836193")
+        )
 
     elif action == "complete_claim":
         required_fields = {
