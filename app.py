@@ -829,7 +829,7 @@ def handle_message_logic(user_id, text, reply_token):
         if not claimant_info:
             line_bot_api.reply_message(
                 reply_token,
-                TextSendMessage(text="格式不正確，請依序輸入「姓名 系級 學號」。\n例如：孫運璿 資工三 61836193")
+                TextSendMessage(text="格式不正確，請依序輸入「姓名 系級 學號」。\n例如：孫XX 資工三 61836193")
             )
             return
         session["claimant_name"], session["claimant_department"], session["claimant_student_id"] = claimant_info
@@ -1088,7 +1088,7 @@ def handle_postback_logic(user_id, data, reply_token, postback_params=None):
         set_session(user_id, session)
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text="請一次輸入領回者的姓名、系級與學號。\n格式：姓名 系級 學號\n例如：孫運璿 資工三 61836193")
+            TextSendMessage(text="請一次輸入領回者的姓名、系級與學號。\n格式：姓名 系級 學號\n例如：孫XX 資工三 61836193")
         )
 
     elif action == "complete_claim":
