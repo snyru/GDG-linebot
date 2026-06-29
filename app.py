@@ -567,7 +567,8 @@ def get_open_item(item_id):
 def complete_claim_record(session):
     item_id = session["claim_item_id"]
     item_ref = db.collection("items").document(item_id)
-    claim_ref = db.collection("claim_records").document()
+    claim_record_id = f"R{normalize_official_id(item_id)}"
+    claim_ref = db.collection("claim_records").document(claim_record_id)
     transaction = db.transaction()
     claim_at = parse_found_datetime(session["claim_at"])
 
